@@ -46,7 +46,6 @@ h. Sau khi tạo xong tài khoản, tắt nguồn MacBook rồi giữ nút ngu�
 i. Mở công cụ Terminal, gõ lệnh sau và nhấn enter:
 ```
 touch /Volumes/Macintosh\ HD\ -\ Data/private/var/db/.AppleSetupDone
-
 ```
 
 k. Khởi động lại MacBook, sau đó đăng nhập vào tài khoản người dùng vừa tạo là xong.
