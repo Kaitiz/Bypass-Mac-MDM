@@ -33,7 +33,7 @@ dscl -f /Volumes/Data/private/var/db/dslocal/nodes/Default localhost -passwd /Lo
 (Tuỳ vào cách cài đặt macOS mà đường dẫn phân vùng Data có thể sẽ khác. Trong truờng hợp cài bằng USB, phân vùng Data sẽ có tên là "Macintosh HD - Data")
 ```
 
-Nhập mật khẩu cho tài khoản root (cần đáp ứng các tiêu chí về độ bảo mật, khác với mật khẩu tài khoản người dùng).
+- Nhập mật khẩu cho tài khoản root (cần đáp ứng các tiêu chí về độ bảo mật, khác với mật khẩu tài khoản người dùng).
 
 c. Khởi động lại MacBook, thao tác các bước cài đặt ngôn ngữ, khu vực... đến phần kết nối Wi-Fi thì dừng lại (không nhập mật khẩu Wi-Fi).
 
