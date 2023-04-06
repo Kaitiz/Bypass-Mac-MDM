@@ -50,6 +50,11 @@ touch /Volumes/Data/private/var/db/.AppleSetupDone
 
 k. Khởi động lại MacBook, sau đó đăng nhập vào tài khoản người dùng vừa tạo là xong.
 
+- Lưu ý: Sau khi đăng nhập thành công, nên chủ động vô hiệu hoá tài khoản root bằng cách mở Terminal và gõ lệnh:
+```
+dsenableroot -d
+```
+
 ---
 ## III. CHẶN THÔNG BÁO DEP CHO MACBOOK MDM
 
