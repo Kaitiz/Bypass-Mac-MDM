@@ -28,9 +28,9 @@ a. Tắt nguồn MacBook, bấm giữ nút nguồn để vào Recovery
 b. Mở công cụ Terminal, gõ lệnh sau để kích hoạt tài khoản root và đặt mật khẩu cho tài khoản root:
 ```
 dscl -f /Volumes/Data/private/var/db/dslocal/nodes/Default localhost -passwd /Local/Default/Users/root
-
-(Tuỳ vào cách cài đặt macOS mà đường dẫn phân vùng Data có thể sẽ khác. Trong truờng hợp cài bằng USB, phân vùng Data sẽ có tên là "Macintosh HD - Data")
 ```
+(Tuỳ vào cách cài đặt macOS mà đường dẫn phân vùng Data có thể sẽ khác. Trong truờng hợp cài bằng USB, phân vùng Data sẽ có tên là "Macintosh HD - Data")
+
 Nhập mật khẩu cho tài khoản root (cần đáp ứng các tiêu chí về độ bảo mật, khác với mật khẩu tài khoản người dùng).
 
 c. Khởi động lại MacBook, thao tác các bước cài đặt ngôn ngữ, khu vực... đến phần kết nối Wi-Fi thì dừng lại (không nhập mật khẩu Wi-Fi).
@@ -48,9 +48,8 @@ h. Sau khi tạo xong tài khoản, tắt nguồn MacBook rồi giữ nút ngu�
 i. Mở công cụ Terminal, gõ lệnh sau và nhấn enter:
 ```
 touch /Volumes/Data/private/var/db/.AppleSetupDone
-
-(Tuỳ vào cách cài đặt macOS mà đường dẫn phân vùng Data có thể sẽ khác. Trong truờng hợp cài bằng USB, phân vùng Data sẽ có tên là "Macintosh HD - Data")
 ```
+(Tuỳ vào cách cài đặt macOS mà đường dẫn phân vùng Data có thể sẽ khác. Trong truờng hợp cài bằng USB, phân vùng Data sẽ có tên là "Macintosh HD - Data")
 
 k. Khởi động lại MacBook, sau đó đăng nhập vào tài khoản người dùng vừa tạo là xong.
 
