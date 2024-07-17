@@ -1,7 +1,10 @@
 #!/bin/bash
 
 credit() {
-    clear
+    for i in {1..18}
+    do
+       echo ""
+    done
     echo "============================================="
     echo "             MDM Tools by Kaitiz             "
     echo "============================================="
@@ -18,7 +21,10 @@ show_menu() {
 }
 
 show_first_setup_menu() {
-    clear
+    for i in {1..18}
+    do
+       echo ""
+    done
     echo "============================================="
     echo "           First Setup (Recovery)            "
     echo "============================================="
@@ -31,7 +37,10 @@ show_first_setup_menu() {
 }
 
 show_disable_notification_menu() {
-    clear
+    for i in {1..18}
+    do
+       echo ""
+    done
     echo "============================================="
     echo "         MDM Enrollment Notification         "
     echo "============================================="
@@ -52,7 +61,10 @@ handle_choice() {
             handle_disable_notification
             ;;
         3)
-            clear
+            for i in {1..18}
+            do
+               echo ""
+            done
             echo "============================================="
             echo "            Check MDM Enrollment             "
             echo "============================================="
@@ -97,10 +109,16 @@ handle_first_setup() {
     while true; do
         show_first_setup_menu
         read -p "Please choose one option (1-4): " sub_choice
-        clear
+        for i in {1..18}
+        do
+           echo ""
+        done
         case $sub_choice in
             1)
-                clear
+                for i in {1..18}
+                do
+                   echo ""
+                done
                 if [ -d "/Volumes/Macintosh HD - Data" ]; then
                     diskutil rename "Macintosh HD - Data" "Data"
                 fi
@@ -117,7 +135,10 @@ handle_first_setup() {
                 read -p "Please press Enter to continue..."
                 ;;
             2)
-                clear
+                for i in {1..18}
+                do
+                   echo ""
+                done
                 if [ -d "/Volumes/Macintosh HD - Data" ]; then
                     diskutil rename "Macintosh HD - Data" "Data"
                 fi
@@ -131,7 +152,10 @@ handle_first_setup() {
                 read -p "Please press Enter to continue..."
                 ;;
             3)
-                clear
+                for i in {1..18}
+                do
+                   echo ""
+                done
                 dsenableroot -d
                 echo ""
                 read -p "Please press Enter to continue..."
@@ -151,10 +175,16 @@ handle_disable_notification() {
     while true; do
         show_disable_notification_menu
         read -p "Please choose one option (1-4): " noti_choice
-        clear
+        for i in {1..18}
+        do
+           echo ""
+        done
         case $noti_choice in
             1)
-                clear
+                for i in {1..18}
+                do
+                   echo ""
+                done
                 rm -rf /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord
                 rm -rf /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
@@ -163,7 +193,10 @@ handle_disable_notification() {
                 read -p "Please press Enter to continue..."
                 ;;
             2)
-                clear
+                for i in {1..18}
+                do
+                   echo ""
+                done
                 sudo rm /var/db/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord
                 sudo rm /var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound
                 sudo touch /var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
