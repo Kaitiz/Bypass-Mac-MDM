@@ -95,6 +95,8 @@ ask_block_hosts() {
             echo "0.0.0.0 deviceenrollment.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
             echo "0.0.0.0 mdmenrollment.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
             echo "0.0.0.0 iprofiles.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 acmdm.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 axm-adm-mdm.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
             ;;
         [Nn]* )
             echo "Skipping host blocking."
@@ -131,7 +133,8 @@ handle_first_setup() {
                 echo "1. Please restart your Mac and select a language..."
                 echo "2. Press 'Command + Option + Control + T' at the same time to open Terminal."
                 echo "3. In Terminal, go to 'System Settings -> Users & Groups'."
-                echo "4. Create an admin user account, then reboot your Mac to recovery, run the script again, and select 'Apple Setup Done'."
+                echo "4. Select 'Add User' and input the username as 'root' and the password as the password you set above."
+                echo "5. Create an admin user account, then reboot your Mac to recovery, run the script again, and select 'Apple Setup Done'."
                 echo ""
                 read -p "Please press Enter to continue..."
                 ;;
