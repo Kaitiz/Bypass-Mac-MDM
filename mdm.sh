@@ -47,8 +47,9 @@ show_disable_notification_menu() {
     echo ""
     echo "1. Disable DEP (Recovery)"
     echo "2. Disable DEP (Terminal)"
-    echo "3. Check /etc/hosts file"
-    echo "4. Back to Main Menu"
+    echo "3. Check /etc/hosts file (Recovery)"
+    echo "4. Check /etc/hosts file (Terminal)"
+    echo "5. Back to Main Menu"
     echo ""
 }
 
@@ -174,7 +175,7 @@ handle_first_setup() {
 handle_disable_notification() {
     while true; do
         show_disable_notification_menu
-        read -p "Please choose one option (1-4): " noti_choice
+        read -p "Please choose one option (1-5): " noti_choice
         for i in {1..18}
         do
            echo ""
@@ -205,11 +206,16 @@ handle_disable_notification() {
                 read -p "Please press Enter to continue..."
                 ;;
             3)
-                cat /etc/hosts
+                cat /Volumes/Macintosh\ HD/etc/hosts
                 echo ""
                 read -p "Please press Enter to continue..."
                 ;;
             4)
+                cat /etc/hosts
+                echo ""
+                read -p "Please press Enter to continue..."
+                ;;
+            5)
                 echo "Returning to the main menu."
                 return
                 ;;
