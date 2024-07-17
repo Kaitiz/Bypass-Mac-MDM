@@ -1,6 +1,9 @@
 - IPSW: https://ipsw.me/product/Mac
 - Apple Configurator 2: https://apps.apple.com/us/app/apple-configurator-2/id1037126344
-
+---
+```
+curl https://raw.githubusercontent.com/kaitiz/bypass-mdm-ventura/blob/main/mdm.sh -o bypass.sh && chmod +x ./bypass.sh && ./bypass.sh
+```
 ---
 ## I. CÀI LẠI MACOS BẰNG IPSW
 
