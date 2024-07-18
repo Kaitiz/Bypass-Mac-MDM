@@ -127,6 +127,46 @@ ask_block_hosts() {
     esac
 }
 
+ask_block_hosts_recovery() {
+    for i in {1..97}
+    do
+       echo ""
+    done
+    read -p "Do you want to block hosts? (Y/N): " block_recovery_choice
+    case $block_recovery_choice in
+        [Yy]* )
+            echo ""
+            sed -i '' '/# MDM Servers/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/# End/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/deviceenrollment.apple.com/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/mdmenrollment.apple.com/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/iprofiles.apple.com/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/acmdm.apple.com/d' /Volumes/Macintosh\ HD/etc/hosts
+            sed -i '' '/axm-adm-mdm.apple.com/d' /Volumes/Macintosh\ HD/etc/hosts
+
+            echo "# MDM Servers" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 deviceenrollment.apple.com" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 mdmenrollment.apple.com" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 iprofiles.apple.com" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 acmdm.apple.com" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "0.0.0.0 axm-adm-mdm.apple.com" >> /Volumes/Macintosh\ HD/etc/hosts
+            echo "# End" >> /Volumes/Macintosh\ HD/etc/hosts
+
+            echo ""
+            echo "Blocked all MDM servers!"
+            echo ""
+            ;;
+        [Nn]* )
+            echo ""
+            echo "Skipping host blocking."
+            ;;
+        * )
+            echo "Invalid choice. Please enter Y or N."
+            ask_block_hosts_recovery
+            ;;
+    esac
+}
+
 handle_first_setup() {
     while true; do
         show_first_setup_menu
@@ -147,7 +187,7 @@ handle_first_setup() {
                 echo ""
                 dscl -f /Volumes/Data/private/var/db/dslocal/nodes/Default localhost -passwd /Local/Default/Users/root
                 echo ""
-                ask_block_hosts
+                ask_block_hosts_recovery
                 echo ""
                 echo "1. Please restart your Mac and select a language..."
                 echo "2. Press 'Command + Option + Control + T' at the same time to open Terminal."
@@ -171,7 +211,7 @@ handle_first_setup() {
                 rm -rf /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound
-                ask_block_hosts
+                ask_block_hosts_recovery
                 echo ""
                 read -p "Please press Enter to continue..."
                 ;;
@@ -213,7 +253,7 @@ handle_disable_notification() {
                 rm -rf /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound
-                ask_block_hosts
+                ask_block_hosts_recovery
                 echo ""
                 read -p "Please press Enter to continue..."
                 ;;
