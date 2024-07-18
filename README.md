@@ -1,7 +1,7 @@
 - IPSW: https://ipsw.me/product/Mac
 - Apple Configurator 2: https://apps.apple.com/us/app/apple-configurator-2/id1037126344
 ---
-### Script tự động:
+#### Script tự động:
 - Đưa máy Mac về Recovery, mở Safari copy code, sau đó paste vào Terminal rồi chạy theo hướng dẫn.
 ```
 curl https://raw.githubusercontent.com/Kaitiz/Bypass-MDM-Ventura/main/mdm.sh -o bypass.sh && chmod +x ./bypass.sh && ./bypass.sh
