@@ -195,7 +195,15 @@ handle_first_setup() {
                 echo "4. Select 'Add User' and input the username as 'root' and the password as the password you set above."
                 echo "5. Create an admin user account, then reboot your Mac to recovery, run the script again, and select 'Apple Setup Done'."
                 echo ""
-                read -p "Please press Enter to continue..."
+                read -p "Do you want to reboot now? (Y/N): " reboot_choice
+                case $reboot_choice in
+                    [Yy]* )
+                        reboot
+                        ;;
+                    *)
+                        echo "Returning to main menu..."
+                        ;;
+                esac
                 ;;
             2)
                 for i in {1..97}
@@ -213,7 +221,15 @@ handle_first_setup() {
                 touch /Volumes/Macintosh\ HD/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound
                 ask_block_hosts_recovery
                 echo ""
-                read -p "Please press Enter to continue..."
+                read -p "Do you want to reboot now? (Y/N): " reboot_choice
+                case $reboot_choice in
+                    [Yy]* )
+                        reboot
+                        ;;
+                    *)
+                        echo "Returning to main menu..."
+                        ;;
+                esac
                 ;;
             3)
                 for i in {1..97}
