@@ -6,7 +6,7 @@
 # Recovery account creation on M1/macOS 26 still requires real-device validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.3
+SCRIPT_VERSION=2026.11.11.4
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -574,6 +574,7 @@ continue_recovery_setup() {
         read -r -p 'Full name (Unicode allowed): ' full_name || return 1
         read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
         username_available "$username" || return 1
+        LAST_ATTEMPT_USERNAME=$username
         create_offline_admin "$username" "$full_name" || return 1
         WORKFLOW_USER=$username
     fi
@@ -715,6 +716,7 @@ continue_live_setup() {
     done <<< "$names"
     home="/Users/$username"
     [ ! -e "$home" ] && [ ! -L "$home" ] || { fail 'Home folder đã tồn tại; không ghi đè.'; return 1; }
+    LAST_ATTEMPT_USERNAME=$username
     run_checked 'Creating live admin account' as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
         printf 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n' >&2
         return 1;
@@ -742,6 +744,66 @@ create_admin_auto() {
     fi
 }
 
+# These diagnostics read only public identity/group attributes and home metadata.
+# Continue after a failed query: missing records are useful evidence after rollback.
+# The only file created is the report in the temporary directory, never on Data.
+diagnose_user_auto() {
+    local username=$1 environment home report logfile
+    [[ "$username" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || {
+        fail 'Username không hợp lệ; chưa chạy lệnh kiểm tra.'; return 1;
+    }
+    detect_environment || return 1
+    environment=$CURRENT_ENV
+    if [ "$environment" = recovery ]; then
+        select_macos_data || return 1
+        home="$DATA_VOLUME/Users/$username"
+    else
+        home="/Users/$username"
+    fi
+    report=$(
+        printf 'MDM DIAGNOSTICS — version %s\nEnvironment: %s\nUsername: %s\n' "$SCRIPT_VERSION" "$environment" "$username"
+        if [ "$environment" = recovery ]; then
+            printf 'Selected Data volume: %s\n' "$DATA_VOLUME"
+        fi
+        printf '\n[1] Account: RecordName, UniqueID, GeneratedUID, NFSHomeDirectory\n'
+        if [ "$environment" = recovery ]; then
+            offline_dscl -read "/Users/$username" RecordName UniqueID GeneratedUID NFSHomeDirectory
+        else
+            dscl . -read "/Users/$username" RecordName UniqueID GeneratedUID NFSHomeDirectory
+        fi
+        printf 'Account query exit: %s\n' "$?"
+        printf '\n[2] Admin group: GroupMembership, GroupMembers\n'
+        if [ "$environment" = recovery ]; then
+            offline_dscl -read /Groups/admin GroupMembership GroupMembers
+        else
+            dscl . -read /Groups/admin GroupMembership GroupMembers
+        fi
+        printf 'Admin group query exit: %s\n' "$?"
+        printf '\n[3] Home folder: %s\n' "$home"
+        ls -ld "$home"
+        printf 'Home query exit: %s\n' "$?"
+        printf '\nEND DIAGNOSTICS — không sửa tài khoản/nhóm/home; không đọc mật khẩu hoặc password hash.\n'
+    2>&1)
+    printf '\n%s\n' "$report"
+    logfile=$(mktemp "${TMPDIR:-/tmp}/mdm-diagnostic.XXXXXX") || {
+        fail 'Không tạo được file báo cáo tạm; kết quả vẫn có ở trên.'; return 1;
+    }
+    if ! printf '%s\n' "$report" > "$logfile"; then
+        rm -f "$logfile"
+        fail 'Không lưu được báo cáo tạm; kết quả vẫn có ở trên.'; return 1
+    fi
+    LAST_DIAGNOSTIC_FILE=$logfile
+    printf '\nFile báo cáo: %s\nBạn có thể chụp phần kết quả hoặc chuyển file này sang máy đang chạy Codex.\n' "$logfile"
+}
+
+diagnose_account_prompt() {
+    local username default_username=${LAST_ATTEMPT_USERNAME:-kaitiz} answer
+    read -r -p "Username cần kiểm tra [${default_username}]: " username || return 1
+    username=${username:-$default_username}
+    diagnose_user_auto "$username" || return 1
+    read -r -p 'Nhấn Enter để quay lại menu...' answer || :
+}
+
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
@@ -765,6 +827,7 @@ show_menu() {
     echo '3. Kiểm tra trạng thái MDM'
     echo '4. Xem file hosts'
     echo '5. Quản lý tài khoản root'
+    echo '6. Chẩn đoán tài khoản / lỗi rollback (chỉ đọc)'
     echo '0. Thoát'
     echo ''
 }
@@ -790,6 +853,7 @@ handle_choice() {
         3) check_enrollment_auto;;
         4) show_hosts_auto;;
         5) handle_root_menu;;
+        6) diagnose_account_prompt;;
         *) fail 'Lựa chọn không hợp lệ.';;
     esac
 }
@@ -820,16 +884,21 @@ main() {
             # Read-only discovery: no changes to the selected installation.
             select_macos_data
             return $?;;
+        --diagnose-user)
+            [ "$#" -eq 2 ] || { fail 'Usage: bash mdm1.sh --diagnose-user USER'; return 1; }
+            diagnose_user_auto "$2"
+            return $?;;
         --check-user)
             [ "$#" -eq 2 ] || { fail 'Usage: bash mdm1.sh --check-user USER'; return 1; }
             check_live_user "$2"
             return $?;;
         --help|-h)
-            printf 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n'
+            printf 'Usage: bash mdm1.sh [--environment | --detect | --diagnose-user USER | --check-user USER | --help]\n'
             printf 'Unlock/mount the macOS Data volume in Disk Utility first.\n'
             printf '%s\n' '--environment reports the detected environment without changing the installation.'
             printf '%s\n' '--detect only lists/selects a mounted macOS Data volume.'
             printf '%s\n' '--check-user USER prints account/token/APFS reports in the installed macOS.'
+            printf '%s\n' '--diagnose-user USER reads account/group/home state in Recovery or macOS and saves a temporary report.'
             return 0;;
         '') ;;
         *) fail "Unknown option: $1"; return 1;;
