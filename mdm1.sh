@@ -510,21 +510,8 @@ as_admin() {
     fi
 }
 
-# This script does not change SIP. Only the previously supported disabled state
-# is accepted for live modification of protected enrollment markers.
-require_live_marker_support() {
-    local status
-    status=$(LC_ALL=C csrutil status 2>&1) || {
-        fail 'Không đọc được trạng thái SIP; chưa sửa dữ liệu.'; return 1;
-    }
-    case "$status" in
-        *'System Integrity Protection status: disabled.'*) return 0;;
-        *'System Integrity Protection status: enabled.'*)
-            fail 'SIP đang bật. Hãy chạy chức năng này trong Recovery.'; return 1;;
-        *) fail 'Trạng thái SIP không được hỗ trợ; hãy chạy chức năng này trong Recovery.'; return 1;;
-    esac
-}
-
+# Do not infer whether a specific operation is allowed from SIP status.
+# Attempt the operation with the required privileges and preserve its real error.
 handle_notifications() {
     detect_environment || return 1
     case "$CURRENT_ENV" in
@@ -536,8 +523,10 @@ handle_notifications() {
             ;;
         macos)
             printf 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n'
-            require_live_marker_support || return 1
-            update_profile_settings "" as_admin || return 1
+            update_profile_settings "" as_admin || {
+                fail 'Không sửa được marker; xem lỗi ở trên. Có thể thử lại mục này trong Recovery.'
+                return 1
+            }
             ask_block_hosts live || return 1
             ;;
     esac
@@ -607,8 +596,7 @@ disable_root_auto() {
 # or a later notification step fails; report the created account explicitly.
 continue_live_setup() {
     local full_name username names name folded home uid groups
-    # Check prerequisites for the combined action before creating an account.
-    require_live_marker_support || return 1
+    # Creating a live admin does not require disabling SIP.
     printf 'macOS: tạo admin bằng sysadminctl trên hệ điều hành đang chạy.\n'
     read -r -p 'Full name (Unicode allowed): ' full_name || return 1
     read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
