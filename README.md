@@ -4,7 +4,7 @@
 #### Script tự động:
 - Đưa máy Mac về Recovery, mở Safari copy code, sau đó paste vào Terminal rồi chạy theo hướng dẫn.
 ```
-curl https://raw.githubusercontent.com/Kaitiz/Bypass-MDM-Ventura/main/mdm.sh -o bypass.sh && chmod +x ./bypass.sh && ./bypass.sh
+curl https://raw.githubusercontent.com/Kaitiz/Bypass-Mac-MDM/main/mdm.sh -o bypass.sh && chmod +x ./bypass.sh && ./bypass.sh
 ```
 ---
 ## I. CÀI LẠI MACOS BẰNG IPSW
@@ -117,3 +117,7 @@ echo "0.0.0.0 deviceenrollment.apple.com" >> /etc/hosts
 ```
 
 h. Kết nối Wi-Fi và sử dụng như bình thường
+
+## Changelog
+
+- New script, more automated and faster.
