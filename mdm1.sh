@@ -27,6 +27,15 @@ read_menu_choice() {
     read -r "$2"
 }
 
+read_ui_input() {
+    local input_status
+    printf '\n%s' "$1"
+    read -r "$2"
+    input_status=$?
+    printf '\n'
+    return "$input_status"
+}
+
 select_ui_language() {
     local choice message=
     while true; do
@@ -47,7 +56,7 @@ select_ui_language() {
     done
 }
 
-fail() { printf "$(ui_text 'ERROR: %s\n' 'LỖI: %s\n')" "$*" >&2; return 1; }
+fail() { printf "$(ui_text 'ERROR: %s\n\n' 'LỖI: %s\n\n')" "$*" >&2; return 1; }
 
 run_checked() {
     local description=$1
@@ -131,7 +140,7 @@ select_macos_data() {
                         devices[${#devices[@]}]=$device
                     fi
                 else
-                    printf "$(ui_text 'Skipping unmounted/locked Data volume: %s. Unlock/mount it in Disk Utility.\n' 'Bỏ qua Data chưa mount/đang khóa: %s. Mở khóa/mount bằng Disk Utility.\n')" "$device" >&2
+                    printf "$(ui_text 'Skipping unmounted/locked Data volume: %s. Unlock/mount it in Disk Utility.\n\n' 'Bỏ qua Data chưa mount/đang khóa: %s. Mở khóa/mount bằng Disk Utility.\n\n')" "$device" >&2
                 fi
             fi
             v=$((v + 1))
@@ -144,11 +153,11 @@ select_macos_data() {
     }
     index=0
     if [ "${#candidates[@]}" -gt 1 ]; then
-        printf "$(ui_text 'Multiple macOS installations found:\n' 'Tìm thấy nhiều bản macOS:\n')"
+        printf "$(ui_text 'Multiple macOS installations found:\n\n' 'Tìm thấy nhiều bản macOS:\n\n')"
         for ((index=0; index<${#candidates[@]}; index++)); do
             printf '%d. %s (%s)\n' "$((index + 1))" "${candidates[$index]}" "${devices[$index]}"
         done
-        read -r -p "$(ui_text 'Select installation number (Enter to cancel): ' 'Chọn số thứ tự bản macOS (Enter để hủy): ')" answer || return 1
+        read_ui_input "$(ui_text 'Select installation number (Enter to cancel): ' 'Chọn số thứ tự bản macOS (Enter để hủy): ')" answer || return 1
         case "$answer" in ''|*[!0-9]*) fail "$(ui_text 'Selection cancelled or invalid.' 'Đã hủy hoặc lựa chọn không hợp lệ.')"; return 1;; esac
         # Compare strings to avoid evaluating untrusted input as shell arithmetic.
         index=0
@@ -161,7 +170,7 @@ select_macos_data() {
     HOSTS_FILE="$DATA_VOLUME/private/etc/hosts"
     DSLOCAL_PATH="$DATA_VOLUME/private/var/db/dslocal/nodes/Default"
     PROFILE_SETTINGS="$DATA_VOLUME/private/var/db/ConfigurationProfiles/Settings"
-    printf "$(ui_text 'Selected macOS Data: %s (%s)\n' 'Đã chọn Data macOS: %s (%s)\n')" "$DATA_VOLUME" "${devices[$index]}"
+    printf "$(ui_text 'Selected macOS Data: %s (%s)\n\n' 'Đã chọn Data macOS: %s (%s)\n\n')" "$DATA_VOLUME" "${devices[$index]}"
 }
 
 validate_offline_layout() {
@@ -225,7 +234,7 @@ update_profile_settings() (
                 fi
             done
             if [ "$rollback_failed" -ne 0 ]; then
-                printf "$(ui_text 'Profile marker rollback incomplete. Backup: %s\n' 'Hoàn tác marker chưa đầy đủ. Bản sao lưu: %s\n')" "$marker_backup" >&2
+                printf "$(ui_text 'Profile marker rollback incomplete. Backup: %s\n\n' 'Hoàn tác marker chưa đầy đủ. Bản sao lưu: %s\n\n')" "$marker_backup" >&2
                 status=1
             fi
         fi
@@ -239,7 +248,7 @@ update_profile_settings() (
             run_checked "$(ui_text 'Backing up profile marker' 'Sao lưu marker profile')" "${marker_privilege[@]}" cp -p "$marker_settings/$marker_name" "$marker_backup/$marker_name" || exit 1
         fi
     done
-    printf "$(ui_text 'Profile marker backup: %s\n' 'Bản sao lưu marker profile: %s\n')" "$marker_backup"
+    printf "$(ui_text 'Profile marker backup: %s\n\n' 'Bản sao lưu marker profile: %s\n\n')" "$marker_backup"
     marker_modified=1
     run_checked "$(ui_text 'Removing activation marker' 'Xóa marker kích hoạt')" "${marker_privilege[@]}" rm -f "$marker_settings/.cloudConfigHasActivationRecord" || exit 1
     run_checked "$(ui_text 'Removing enrollment marker' 'Xóa marker đăng ký quản lý')" "${marker_privilege[@]}" rm -f "$marker_settings/.cloudConfigRecordFound" || exit 1
@@ -269,12 +278,12 @@ write_blocked_hosts() {
     fi
     if ! run_checked "$(ui_text 'Writing hosts' 'Ghi hosts')" "$@" tee "$hosts" < "$temporary" > /dev/null; then
         run_checked "$(ui_text 'Restoring hosts after write failure' 'Khôi phục hosts sau lỗi ghi')" "$@" cp -p "$backup" "$hosts" || {
-            printf "$(ui_text 'Restore hosts manually from: %s\n' 'Khôi phục hosts thủ công từ: %s\n')" "$backup" >&2;
+            printf "$(ui_text 'Restore hosts manually from: %s\n\n' 'Khôi phục hosts thủ công từ: %s\n\n')" "$backup" >&2;
         }
         rm -f "$temporary"; return 1
     fi
     rm -f "$temporary"
-    printf "$(ui_text 'Hosts updated. Backup: %s\n' 'Đã cập nhật hosts. Bản sao lưu: %s\n')" "$backup"
+    printf "$(ui_text 'Hosts updated. Backup: %s\n\n' 'Đã cập nhật hosts. Bản sao lưu: %s\n\n')" "$backup"
 }
 
 apply_hosts_for_context() {
@@ -288,7 +297,7 @@ apply_hosts_for_context() {
     [ ! -L "$hosts_path" ] || { fail "$(ui_text 'Refusing symbolic-link hosts file.' 'Từ chối file hosts là symlink.')"; return 1; }
     count=$(blocked_host_count "$hosts_path") || count=unknown
     if [ "$count" = 5 ]; then
-        printf "$(ui_text 'Hosts already contains all 5 blocking entries; no changes needed.\n' 'Hosts đã có đủ 5 mục chặn; không cần ghi lại.\n')"
+        printf "$(ui_text 'Hosts already contains all 5 blocking entries; no changes needed.\n\n' 'Hosts đã có đủ 5 mục chặn; không cần ghi lại.\n\n')"
         return 0
     fi
     if [ "$1" = recovery ]; then write_blocked_hosts "$hosts_path";
@@ -380,9 +389,9 @@ verify_admin_group() {
     printf '%s\n' "$report" >&2
     if [ -n "$diagnostics" ] && [ -d "$diagnostics" ] && [ ! -L "$diagnostics" ]; then
         if (umask 077; printf '%s\n' "$report" > "$diagnostics/admin-verification.txt"); then
-            printf "$(ui_text 'Diagnostics (no passwords/hashes): %s/admin-verification.txt\n' 'Chẩn đoán (không có mật khẩu/hash): %s/admin-verification.txt\n')" "$diagnostics" >&2
+            printf "$(ui_text 'Diagnostics (no passwords/hashes): %s/admin-verification.txt\n\n' 'Chẩn đoán (không có mật khẩu/hash): %s/admin-verification.txt\n\n')" "$diagnostics" >&2
         else
-            printf "$(ui_text 'Could not save group diagnostics; review the output above.\n' 'Không lưu được chẩn đoán nhóm; xem kết quả ở trên.\n')" >&2
+            printf "$(ui_text 'Could not save group diagnostics; review the output above.\n\n' 'Không lưu được chẩn đoán nhóm; xem kết quả ở trên.\n\n')" >&2
         fi
     fi
     return 1
@@ -551,12 +560,12 @@ create_offline_admin() (
                     # Never recursively delete a home folder: it may now contain data.
                     rmdir "$home" || failed=1
                 else
-                    printf "$(ui_text 'Preserving home: user record deletion failed or was not confirmed: %s\n' 'Giữ lại home vì chưa xác nhận xóa được bản ghi user: %s\n')" "$home" >&2
+                    printf "$(ui_text 'Preserving home: user record deletion failed or was not confirmed: %s\n\n' 'Giữ lại home vì chưa xác nhận xóa được bản ghi user: %s\n\n')" "$home" >&2
                     failed=1
                 fi
             fi
             if [ "$failed" -ne 0 ]; then
-                printf "$(ui_text 'Rollback incomplete. Inspect account %s, home %s and backup %s before retrying.\n' 'Hoàn tác chưa đầy đủ. Kiểm tra user %s, home %s và bản sao lưu %s trước khi thử lại.\n')" "$name" "$home" "$backup" >&2
+                printf "$(ui_text 'Rollback incomplete. Inspect account %s, home %s and backup %s before retrying.\n\n' 'Hoàn tác chưa đầy đủ. Kiểm tra user %s, home %s và bản sao lưu %s trước khi thử lại.\n\n')" "$name" "$home" "$backup" >&2
                 status=1
             fi
         fi
@@ -579,7 +588,7 @@ create_offline_admin() (
     backup=$(mktemp -d "$DATA_VOLUME/private/var/db/kaitiz-mdm-backup.XXXXXX") || exit 1
     chmod 700 "$backup" || exit 1
     run_checked "$(ui_text 'Backing up admin group' 'Sao lưu nhóm admin')" cp -p "$DSLOCAL_PATH/groups/admin.plist" "$backup/admin.plist" || exit 1
-    printf "$(ui_text 'Creating %s (UID %s). Group backup: %s\n' 'Đang tạo %s (UID %s). Bản sao lưu nhóm: %s\n')" "$name" "$uid" "$backup"
+    printf "$(ui_text 'Creating %s (UID %s). Group backup: %s\n\n' 'Đang tạo %s (UID %s). Bản sao lưu nhóm: %s\n\n')" "$name" "$uid" "$backup"
     record_started=1
     run_checked "$(ui_text 'Creating user record' 'Tạo bản ghi user')" offline_dscl -create "/Users/$name" || exit 1
     for attribute in UserShell RealName UniqueID PrimaryGroupID GeneratedUID NFSHomeDirectory; do
@@ -593,7 +602,7 @@ create_offline_admin() (
         esac
         run_checked "$(ui_text "Setting $attribute" "Đặt $attribute")" offline_dscl -create "/Users/$name" "$attribute" "$value" || exit 1
     done
-    printf "$(ui_text 'Set the NEW account password at the dscl prompts. No default password is used.\n' 'Đặt mật khẩu tài khoản MỚI theo lời nhắc dscl. Không có mật khẩu mặc định.\n')"
+    printf "$(ui_text 'Set the NEW account password at the dscl prompts. No default password is used.\n\n' 'Đặt mật khẩu tài khoản MỚI theo lời nhắc dscl. Không có mật khẩu mặc định.\n\n')"
     # Let dscl prompt securely; never put the password in argv or a shell variable.
     run_checked "$(ui_text 'Setting account password' 'Đặt mật khẩu tài khoản')" offline_dscl -passwd "/Users/$name" || exit 1
     plist_get "$record" :ShadowHashData:0 >/dev/null || { fail "$(ui_text 'Password hash was not created.' 'Chưa tạo được password hash.')"; exit 1; }
@@ -606,9 +615,9 @@ create_offline_admin() (
     run_checked "$(ui_text 'Adding admin UUID' 'Thêm UUID vào nhóm admin')" offline_dscl -merge /Groups/admin GroupMembers "$guid" || exit 1
     verify_offline_admin "$name" "$uid" "$guid" 1 "$backup" || exit 1
     committed=1
-    printf "$(ui_text 'Offline admin created: %s (%s).\n' 'Đã tạo admin ngoại tuyến: %s (%s).\n')" "$full_name" "$name"
-    printf "$(ui_text 'Login, Secure Token and volume ownership have NOT been verified.\n' 'Chưa xác minh đăng nhập, Secure Token và volume ownership.\n')"
-    printf "$(ui_text 'The empty home folder is owned by the new user; GUI template initialization is not reproduced.\n' 'Home rỗng thuộc user mới; chưa tái tạo đầy đủ bước khởi tạo của giao diện Apple.\n')"
+    printf "$(ui_text 'Offline admin created: %s (%s).\n\n' 'Đã tạo admin ngoại tuyến: %s (%s).\n\n')" "$full_name" "$name"
+    printf "$(ui_text 'Login, Secure Token and volume ownership have NOT been verified.\n\n' 'Chưa xác minh đăng nhập, Secure Token và volume ownership.\n\n')"
+    printf "$(ui_text 'The empty home folder is owned by the new user; GUI template initialization is not reproduced.\n\n' 'Home rỗng thuộc user mới; chưa tái tạo đầy đủ bước khởi tạo của giao diện Apple.\n\n')"
 )
 
 choose_setup_language() {
@@ -616,12 +625,12 @@ choose_setup_language() {
     SETUP_LANGUAGE=keep
     printf "$(ui_text '\nmacOS account language (separate from the script interface):\n1. English\n2. Vietnamese\n0. Keep current (Enter)\n' '\nNgôn ngữ tài khoản macOS (tách biệt với giao diện script):\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n')"
     while true; do
-        read -r -p "$(ui_text 'Select macOS account language: ' 'Chọn ngôn ngữ: ')" choice || return 0
+        read_ui_input "$(ui_text 'Select macOS account language: ' 'Chọn ngôn ngữ: ')" choice || return 0
         case "$choice" in
             1) SETUP_LANGUAGE=en; return 0;;
             2) SETUP_LANGUAGE=vi; return 0;;
             0|'') return 0;;
-            *) printf "$(ui_text 'Invalid selection.\n' 'Lựa chọn không hợp lệ.\n')";;
+            *) printf "$(ui_text 'Invalid selection.\n\n' 'Lựa chọn không hợp lệ.\n\n')";;
         esac
     done
 }
@@ -692,11 +701,11 @@ set_offline_user_language() (
     if [ -f "$language_preferences" ]; then
         language_backup=$(mktemp "$language_home/Library/Preferences/.GlobalPreferences.backup.XXXXXX") || exit 1
         run_checked "$(ui_text 'Backing up existing preferences' 'Sao lưu tùy chọn hiện có')" cp -p "$language_preferences" "$language_backup" || exit 1
-        printf "$(ui_text 'Preferences backup: %s\n' 'Bản sao lưu tùy chọn: %s\n')" "$language_backup"
+        printf "$(ui_text 'Preferences backup: %s\n\n' 'Bản sao lưu tùy chọn: %s\n\n')" "$language_backup"
     fi
     run_checked "$(ui_text 'Saving target user language' 'Lưu ngôn ngữ cho user đích')" mv -f "$language_stage" "$language_preferences" || exit 1
     language_stage=
-    printf "$(ui_text 'Language set for %s: %s. Applies at macOS login.\n' 'Đã đặt ngôn ngữ cho %s: %s. Áp dụng khi đăng nhập macOS.\n')" "$language_user" "$language_code"
+    printf "$(ui_text 'Language set for %s: %s. Applies at macOS login.\n\n' 'Đã đặt ngôn ngữ cho %s: %s. Áp dụng khi đăng nhập macOS.\n\n')" "$language_user" "$language_code"
 )
 
 finish_recovery_setup() {
@@ -720,16 +729,16 @@ finish_recovery_setup() {
     choose_setup_language || return 1
     set_offline_user_language "$name" "$SETUP_LANGUAGE" || return 1
     run_checked "$(ui_text 'Updating setup marker' 'Cập nhật marker hoàn tất thiết lập')" touch "$DATA_VOLUME/private/var/db/.AppleSetupDone" || return 1
-    printf "$(ui_text 'Setup marked complete. Restart manually and test login before disabling any existing account.\n' 'Đã đánh dấu hoàn tất. Khởi động lại thủ công và thử đăng nhập trước khi vô hiệu hóa tài khoản hiện có.\n')"
+    printf "$(ui_text 'Setup marked complete. Restart manually and test login before disabling any existing account.\n\n' 'Đã đánh dấu hoàn tất. Khởi động lại thủ công và thử đăng nhập trước khi vô hiệu hóa tài khoản hiện có.\n\n')"
 }
 
 continue_recovery_setup() {
     local full_name username
     prepare_recovery_target || return 1
     load_offline_users && find_offline_admins || return 1
-    printf "$(ui_text 'Create a new offline admin account.\n' 'Tạo tài khoản admin ngoại tuyến mới.\n')"
-    read -r -p "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
-    read -r -p "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
+    printf "$(ui_text 'Create a new offline admin account.\n\n' 'Tạo tài khoản admin ngoại tuyến mới.\n\n')"
+    read_ui_input "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
+    read_ui_input "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
     username_available "$username" || return 1
     create_offline_admin "$username" "$full_name" || return 1
     finish_recovery_setup "$username"
@@ -777,15 +786,16 @@ handle_notifications() {
     detect_environment || return 1
     case "$CURRENT_ENV" in
         recovery)
-            printf "$(ui_text 'Environment: Recovery — working on the selected macOS volume.\n' 'Môi trường: Recovery — thao tác trên volume macOS được chọn.\n')"
+            printf "$(ui_text 'Environment: Recovery — working on the selected macOS volume.\n\n' 'Môi trường: Recovery — thao tác trên volume macOS được chọn.\n\n')"
             prepare_recovery_target || return 1
             update_profile_settings "$DATA_VOLUME" || marker_result=1
             apply_hosts_for_context recovery || hosts_result=1
             ;;
         macos)
-            printf "$(ui_text 'Environment: macOS — working on the running installation.\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n')"
-            printf "$(ui_text 'Removing all removable configuration profiles, including any Wi-Fi/VPN settings they contain.\n' 'Gỡ mọi configuration profile có thể gỡ, gồm cả cấu hình Wi-Fi/VPN bên trong.\n')"
+            printf "$(ui_text 'Environment: macOS — working on the running installation.\n\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n\n')"
+            printf "$(ui_text 'Removing all removable configuration profiles, including any Wi-Fi/VPN settings they contain.\n\n' 'Gỡ mọi configuration profile có thể gỡ, gồm cả cấu hình Wi-Fi/VPN bên trong.\n\n')"
             run_checked "$(ui_text 'Removing configuration profiles' 'Gỡ configuration profiles')" as_admin profiles remove -all || removal_result=1
+            printf '\n'
             apply_hosts_for_context live || hosts_result=1
             ;;
     esac
@@ -793,7 +803,7 @@ handle_notifications() {
         fail "$(ui_text 'Some steps did not complete. Review the errors above; do not assume all profiles were removed.' 'Một số bước chưa hoàn tất. Xem lỗi ở trên; chưa kết luận đã gỡ hết profile.')"
         return 1
     fi
-    printf "$(ui_text 'Local processing completed. This does not confirm release from the organization.' 'Đã xử lý xong trên máy. Đây không phải xác nhận đã được tổ chức release.')"
+    printf "$(ui_text 'Local processing completed.\n' 'Đã xử lý xong trên máy.\n')"
     printf '\n'
 }
 
@@ -813,8 +823,8 @@ check_enrollment_auto() {
     if [ "$CURRENT_ENV" = recovery ]; then
         if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
         printf '\n- Enrolled via DEP: Unknown\n- MDM enrollment: Unknown\n- Config profile: Offline (Recovery)\n\n'
-        printf "$(ui_text '→ Conclusion: Cannot determine blocking effectiveness in Recovery.\n' '→ Kết luận: Chưa thể xác nhận hiệu quả chặn trong Recovery.\n')"
-        printf "$(ui_text 'Note: Check again after booting into macOS.\n' 'Lưu ý: Kiểm tra lại sau khi đăng nhập macOS.\n')"
+        printf "$(ui_text '→ Conclusion: Cannot determine blocking effectiveness in Recovery.\n\n' '→ Kết luận: Chưa thể xác nhận hiệu quả chặn trong Recovery.\n\n')"
+        printf "$(ui_text 'Note: Check again after booting into macOS.\n\n' 'Lưu ý: Kiểm tra lại sau khi đăng nhập macOS.\n\n')"
     else
         status_text=$(LC_ALL=C as_admin profiles status -type enrollment 2>&1); status_rc=$?
         config_text=$(LC_ALL=C as_admin profiles show -type enrollment 2>&1); config_rc=$?
@@ -869,21 +879,21 @@ summarize_mdm_status() {
     esac
     printf '\n- Enrolled via DEP: %s\n- MDM enrollment: %s\n- Config profile: %s\n\n' "$dep_label" "$mdm_label" "$config_label"
     if [ "$mdm" = yes ]; then
-        printf "$(ui_text '→ Conclusion: Not blocked completely — MDM is still enrolled.\n' '→ Kết luận: Chưa chặn hoàn toàn — máy vẫn enrolled MDM.\n')"
-        printf "$(ui_text 'Note: Blocking hosts does not remove existing management.\n' 'Lưu ý: Chặn hosts không gỡ quản lý đã có.\n')"
+        printf "$(ui_text '→ Conclusion: Not blocked completely — MDM is still enrolled.\n\n' '→ Kết luận: Chưa chặn hoàn toàn — máy vẫn enrolled MDM.\n\n')"
+        printf "$(ui_text 'Note: Blocking hosts does not remove existing management.\n\n' 'Lưu ý: Chặn hosts không gỡ quản lý đã có.\n\n')"
     elif [ "$mdm" = no ] && [ "$config_state" = unavailable ] && [ "$count" = 5 ]; then
-        printf "$(ui_text '→ Conclusion: Local blocking appears effective based on these checks.\n' '→ Kết luận: Chặn cục bộ có dấu hiệu thành công theo kết quả kiểm tra.\n')"
-        printf "$(ui_text 'Note: Network errors can also cause cloud failures; this does not confirm release from the organization.\n' 'Lưu ý: Lỗi mạng cũng có thể gây lỗi cloud; kết quả này không xác nhận máy đã được tổ chức release.\n')"
+        printf "$(ui_text '→ Conclusion: Local blocking appears effective based on these checks.\n\n' '→ Kết luận: Chặn cục bộ có dấu hiệu thành công theo kết quả kiểm tra.\n\n')"
+        printf "$(ui_text 'Note: Network errors can also prevent downloading the configuration from the cloud.\n\n' 'Lưu ý: Lỗi mạng cũng có thể gây ra lỗi không tải được config từ cloud.\n\n')"
     else
-        printf "$(ui_text '→ Conclusion: Blocking success is not confirmed.\n' '→ Kết luận: Chưa đủ cơ sở xác nhận chặn thành công.\n')"
+        printf "$(ui_text '→ Conclusion: Blocking success is not confirmed.\n\n' '→ Kết luận: Chưa đủ cơ sở xác nhận chặn thành công.\n\n')"
         if [ "$config_state" = limited ]; then
-            printf "$(ui_text 'Note: Cloud queries are rate-limited; check again later.\n' 'Lưu ý: Truy vấn cloud bị giới hạn lượt; kiểm tra lại sau.\n')"
+            printf "$(ui_text 'Note: Cloud queries are rate-limited; check again later.\n\n' 'Lưu ý: Truy vấn cloud bị giới hạn lượt; kiểm tra lại sau.\n\n')"
         elif [ "$mdm" = unknown ]; then
-            printf "$(ui_text 'Note: Cannot read enrollment status; check administrator permissions.\n' 'Lưu ý: Không đọc được trạng thái enrollment; kiểm tra quyền quản trị.\n')"
+            printf "$(ui_text 'Note: Cannot read enrollment status; check administrator permissions.\n\n' 'Lưu ý: Không đọc được trạng thái enrollment; kiểm tra quyền quản trị.\n\n')"
         elif [ "$count" != 5 ]; then
-            printf "$(ui_text 'Note: Blocking hosts found: %s/5. A cloud error alone is insufficient.\n' 'Lưu ý: Hosts được chặn: %s/5. Riêng lỗi cloud chưa đủ để kết luận.\n')" "$count"
+            printf "$(ui_text 'Note: Blocking hosts found: %s/5. A cloud error alone is insufficient.\n\n' 'Lưu ý: Hosts được chặn: %s/5. Riêng lỗi cloud chưa đủ để kết luận.\n\n')" "$count"
         else
-            printf "$(ui_text 'Note: Configuration may be cached, or the cloud query result is inconclusive.\n' 'Lưu ý: Config có thể từ cache hoặc kết quả truy vấn cloud chưa xác định.\n')"
+            printf "$(ui_text 'Note: Configuration may be cached, or the cloud query result is inconclusive.\n\n' 'Lưu ý: Config có thể từ cache hoặc kết quả truy vấn cloud chưa xác định.\n\n')"
         fi
     fi
 }
@@ -905,7 +915,7 @@ handle_inspection_menu() {
             *) fail "$(ui_text 'Invalid selection.' 'Lựa chọn không hợp lệ.')";;
         esac
         printf '\n'
-        read -r -p "$(ui_text 'Press Enter to return...' 'Nhấn Enter để quay lại...')" pause || return 0
+        read_ui_input "$(ui_text 'Press Enter to return...' 'Nhấn Enter để quay lại...')" pause || return 0
     done
 }
 
@@ -962,21 +972,21 @@ check_live_user() {
     [ "$CURRENT_ENV" = macos ] || { fail "$(ui_text 'Run --check-user after booting into the installed macOS.' 'Chạy --check-user sau khi khởi động vào macOS đã cài.')"; return 1; }
     [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail "$(ui_text 'Invalid account name.' 'Tên tài khoản không hợp lệ.')"; return 1; }
     find_sysadminctl || return 1
-    printf "$(ui_text 'Read-only diagnostics for the currently booted macOS: %s\n' 'Báo cáo chỉ đọc trên macOS đang chạy: %s\n')" "$name"
+    printf "$(ui_text 'Read-only diagnostics for the currently booted macOS: %s\n\n' 'Báo cáo chỉ đọc trên macOS đang chạy: %s\n\n')" "$name"
     run_checked "$(ui_text 'Reading user identity' 'Đọc danh tính user')" id "$name" || return 1
     run_checked "$(ui_text 'Reading user UUID' 'Đọc UUID của user')" dscl . -read "/Users/$name" GeneratedUID || return 1
     run_checked "$(ui_text 'Reading admin membership' 'Đọc thành viên nhóm admin')" dsmemberutil checkmembership -U "$name" -G admin || return 1
     run_checked "$(ui_text 'Reading Secure Token status' 'Đọc trạng thái Secure Token')" "$SYSADMINCTL" -secureTokenStatus "$name" || return 1
-    printf "$(ui_text 'Match the GeneratedUID above with a Volume Owner entry below:\n' 'Đối chiếu GeneratedUID ở trên với Volume Owner ở dưới:\n')"
+    printf "$(ui_text 'Match the GeneratedUID above with a Volume Owner entry below:\n\n' 'Đối chiếu GeneratedUID ở trên với Volume Owner ở dưới:\n\n')"
     run_checked "$(ui_text 'Reading APFS users' 'Đọc danh sách user APFS')" diskutil apfs listUsers / || return 1
-    printf "$(ui_text 'These reports do not test password login or FileVault unlock. Review their contents; exit status alone is insufficient.\n' 'Báo cáo không thử mật khẩu đăng nhập hoặc mở khóa FileVault. Cần đọc nội dung thay vì chỉ dựa vào mã thoát.\n')"
+    printf "$(ui_text 'These reports do not test password login or FileVault unlock. Review their contents; exit status alone is insufficient.\n\n' 'Báo cáo không thử mật khẩu đăng nhập hoặc mở khóa FileVault. Cần đọc nội dung thay vì chỉ dựa vào mã thoát.\n\n')"
 }
 
 main() {
     case "${1:-}" in
         --environment)
             detect_environment || return 1
-            printf "$(ui_text 'Environment: %s\n' 'Môi trường: %s\n')" "$CURRENT_ENV"
+            printf "$(ui_text 'Environment: %s\n\n' 'Môi trường: %s\n\n')" "$CURRENT_ENV"
             return 0;;
         --detect)
             # Read-only discovery: no changes to the selected installation.
@@ -987,8 +997,8 @@ main() {
             check_live_user "$2"
             return $?;;
         --help|-h)
-            printf "$(ui_text 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n' 'Cách dùng: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n')"
-            printf "$(ui_text 'Unlock/mount the macOS Data volume in Disk Utility first.\n' 'Mở khóa/mount volume Data của macOS bằng Disk Utility trước.\n')"
+            printf "$(ui_text 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n\n' 'Cách dùng: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n\n')"
+            printf "$(ui_text 'Unlock/mount the macOS Data volume in Disk Utility first.\n\n' 'Mở khóa/mount volume Data của macOS bằng Disk Utility trước.\n\n')"
             printf '%s\n' "$(ui_text '--environment reports the detected environment without changing the installation.' '--environment hiển thị môi trường nhận diện được, không sửa bản macOS.')"
             printf '%s\n' "$(ui_text '--detect only lists/selects a mounted macOS Data volume.' '--detect chỉ liệt kê/chọn volume Data macOS đã mount.')"
             printf '%s\n' "$(ui_text '--check-user USER prints account/token/APFS reports in the installed macOS.' '--check-user USER in báo cáo tài khoản/token/APFS trong macOS đã cài.')"
@@ -1001,14 +1011,14 @@ main() {
         clear_screen
         show_menu
         read_menu_choice "$(ui_text 'Select an option:' 'Chọn chức năng:')" choice || break
-        [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n' 'Đã thoát.\n')"; break; }
+        [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n\n' 'Đã thoát.\n\n')"; break; }
         if [ "$choice" = 3 ]; then handle_inspection_menu; continue; fi
         clear_screen
         credit
         printf '\n'
         handle_choice "$choice"
         printf '\n\n'
-        read -r -p "$(ui_text 'Press Enter to return to the menu...' 'Nhấn Enter để quay lại menu...')" menu_return || break
+        read_ui_input "$(ui_text 'Press Enter to return to the menu...' 'Nhấn Enter để quay lại menu...')" menu_return || break
     done
 }
 
