@@ -3,10 +3,11 @@
 # Kaitiz MDM tools: mounted-volume discovery and experimental offline accounts.
 # Based on the user's Kaitiz/Bypass-Mac-MDM script. The offline-account approach
 # was reviewed against maclifevn/bypasmdm; account handling below is newly written.
-# Recovery account creation on M1/macOS 26 still requires real-device validation.
+# Offline login was tested by the user on M1/macOS 26; Secure Token/ownership
+# and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.5
+SCRIPT_VERSION=2026.11.11.6
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -548,6 +549,94 @@ choose_existing_admin() {
     fail 'Selection cancelled or invalid.'
 }
 
+choose_setup_language() {
+    local choice
+    SETUP_LANGUAGE=keep
+    printf '\nNgôn ngữ khi đăng nhập macOS:\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n'
+    while true; do
+        read -r -p 'Chọn ngôn ngữ: ' choice || return 0
+        case "$choice" in
+            1) SETUP_LANGUAGE=en; return 0;;
+            2) SETUP_LANGUAGE=vi; return 0;;
+            0|'') return 0;;
+            *) printf 'Lựa chọn không hợp lệ.\n';;
+        esac
+    done
+}
+
+# Write the target account's AppleLanguages before its first macOS login.
+# Never run defaults -g in Recovery: that would affect the Recovery environment.
+# Only the language array changes; region/date formats and other keys are kept.
+set_offline_user_language() (
+    language_user=$1 language_code=$2 language_stage= language_backup=
+    [ "$language_code" != keep ] || exit 0
+    case "$language_code" in en|vi) ;; *) fail 'Ngôn ngữ không được hỗ trợ.'; exit 1;; esac
+    [[ "$language_user" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Username không hợp lệ.'; exit 1; }
+    validate_offline_layout || exit 1
+    language_record="$DSLOCAL_PATH/users/$language_user.plist"
+    [ -f "$language_record" ] && [ ! -L "$language_record" ] || { fail 'Không có bản ghi user hợp lệ.'; exit 1; }
+    language_uid=$(plist_get "$language_record" :uid:0) &&
+        [[ "$language_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$language_uid))" -ge 501 ] && [ "$((10#$language_uid))" -le 60000 ] || exit 1
+    language_gid=$(plist_get "$language_record" :gid:0) &&
+        [[ "$language_gid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$language_gid))" -le 4294967295 ] || exit 1
+    [ "$(plist_get "$language_record" :name:0)" = "$language_user" ] &&
+        [ "$(plist_get "$language_record" :home:0)" = "/Users/$language_user" ] || {
+        fail 'Bản ghi user không khớp đường dẫn home.'; exit 1;
+    }
+    language_home="$DATA_VOLUME/Users/$language_user"
+    [ -d "$language_home" ] && [ ! -L "$language_home" ] &&
+        [ "$(cd "$language_home" && pwd -P)" = "$language_home" ] &&
+        [ "$(stat -f '%u:%g' "$language_home")" = "$language_uid:$language_gid" ] || {
+        fail 'Home không hợp lệ hoặc có chủ sở hữu khác dự kiến.'; exit 1;
+    }
+    for language_directory in "$language_home/Library" "$language_home/Library/Preferences"; do
+        if [ -L "$language_directory" ]; then
+            fail "Không ghi qua symlink: $language_directory"; exit 1
+        elif [ -e "$language_directory" ]; then
+            [ -d "$language_directory" ] || { fail "Không phải thư mục: $language_directory"; exit 1; }
+        else
+            run_checked 'Creating user preferences directory' mkdir -m 700 "$language_directory" || exit 1
+            run_checked 'Setting preferences directory ownership' chown "$language_uid:$language_gid" "$language_directory" || exit 1
+        fi
+    done
+    language_preferences="$language_home/Library/Preferences/.GlobalPreferences.plist"
+    [ ! -L "$language_preferences" ] &&
+        { [ ! -e "$language_preferences" ] || [ -f "$language_preferences" ]; } || {
+        fail 'File tùy chọn ngôn ngữ có kiểu không hợp lệ.'; exit 1;
+    }
+    language_stage=$(mktemp "$language_home/Library/Preferences/.kaitiz-language.XXXXXX") || exit 1
+    trap 'if [ -n "$language_stage" ]; then rm -f "$language_stage"; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ -f "$language_preferences" ]; then
+        run_checked 'Copying existing preferences' cp -p "$language_preferences" "$language_stage" || exit 1
+        /usr/libexec/PlistBuddy -c Print "$language_stage" >/dev/null || { fail 'File preferences hiện có không phải plist hợp lệ.'; exit 1; }
+    else
+        printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict/></plist>' > "$language_stage" || {
+            fail 'Không tạo được plist ngôn ngữ ban đầu.'; exit 1;
+        }
+    fi
+    if plist_get "$language_stage" :AppleLanguages >/dev/null; then
+        run_checked 'Replacing language list' /usr/libexec/PlistBuddy -c 'Delete :AppleLanguages' "$language_stage" || exit 1
+    fi
+    run_checked 'Creating language list' /usr/libexec/PlistBuddy -c 'Add :AppleLanguages array' "$language_stage" || exit 1
+    run_checked 'Setting preferred language' /usr/libexec/PlistBuddy -c "Add :AppleLanguages:0 string $language_code" "$language_stage" || exit 1
+    if [ "$language_code" = vi ]; then
+        run_checked 'Setting fallback language' /usr/libexec/PlistBuddy -c 'Add :AppleLanguages:1 string en' "$language_stage" || exit 1
+    fi
+    [ "$(plist_get "$language_stage" :AppleLanguages:0)" = "$language_code" ] || { fail 'Xác minh ngôn ngữ thất bại.'; exit 1; }
+    run_checked 'Setting preferences file ownership' chown "$language_uid:$language_gid" "$language_stage" || exit 1
+    run_checked 'Setting preferences file permissions' chmod 600 "$language_stage" || exit 1
+    if [ -f "$language_preferences" ]; then
+        language_backup=$(mktemp "$language_home/Library/Preferences/.GlobalPreferences.backup.XXXXXX") || exit 1
+        run_checked 'Backing up existing preferences' cp -p "$language_preferences" "$language_backup" || exit 1
+        printf 'Preferences backup: %s\n' "$language_backup"
+    fi
+    run_checked 'Saving target user language' mv -f "$language_stage" "$language_preferences" || exit 1
+    language_stage=
+    printf 'Đã đặt ngôn ngữ cho %s: %s. Áp dụng khi đăng nhập macOS.\n' "$language_user" "$language_code"
+)
+
 finish_recovery_setup() {
     local name=$1 answer uid guid record
     [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Unsupported account name.'; return 1; }
@@ -557,7 +646,6 @@ finish_recovery_setup() {
     }
     verify_offline_admin "$name" "$uid" "$guid" || return 1
     printf '\nFinishing marks Apple Setup Done so the next boot can reach the login screen.\n'
-    printf 'This experimental Recovery account has not been tested on your M1/macOS 26.\n'
     printf 'Offline checks do not verify login, Secure Token, FileVault unlock or volume ownership.\n'
     printf 'Only continue if you intend to test this account at the next boot.\n'
     read -r -p "Type FINISH $name to finish, or Enter to leave setup unchanged: " answer || return 1
@@ -572,6 +660,8 @@ finish_recovery_setup() {
     # SetupDone is last: an earlier failure must not prematurely skip setup.
     update_profile_settings "$DATA_VOLUME" || return 1
     ask_block_hosts_recovery || return 1
+    choose_setup_language || return 1
+    set_offline_user_language "$name" "$SETUP_LANGUAGE" || return 1
     run_checked 'Updating setup marker' touch "$DATA_VOLUME/private/var/db/.AppleSetupDone" || return 1
     printf 'Setup marked complete. Restart manually and test login before disabling any existing account.\n'
 }
@@ -583,11 +673,10 @@ continue_recovery_setup() {
     if [ "${#ADMIN_NAMES[@]}" -gt 0 ]; then
         choose_existing_admin || return 1
     else
-        printf 'No direct local admin record found. Create an experimental offline admin.\n'
+        printf 'No direct local admin record found. Create an offline admin.\n'
         read -r -p 'Full name (Unicode allowed): ' full_name || return 1
         read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
         username_available "$username" || return 1
-        LAST_ATTEMPT_USERNAME=$username
         create_offline_admin "$username" "$full_name" || return 1
         WORKFLOW_USER=$username
     fi
@@ -729,7 +818,6 @@ continue_live_setup() {
     done <<< "$names"
     home="/Users/$username"
     [ ! -e "$home" ] && [ ! -L "$home" ] || { fail 'Home folder đã tồn tại; không ghi đè.'; return 1; }
-    LAST_ATTEMPT_USERNAME=$username
     run_checked 'Creating live admin account' as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
         printf 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n' >&2
         return 1;
@@ -757,145 +845,6 @@ create_admin_auto() {
     fi
 }
 
-# These diagnostics read only public identity/group attributes and home metadata.
-# Continue after a failed query: missing records are useful evidence after rollback.
-# The only file created is the report in the temporary directory, never on Data.
-diagnose_user_auto() {
-    local username=$1 environment home report logfile
-    [[ "$username" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || {
-        fail 'Username không hợp lệ; chưa chạy lệnh kiểm tra.'; return 1;
-    }
-    detect_environment || return 1
-    environment=$CURRENT_ENV
-    if [ "$environment" = recovery ]; then
-        select_macos_data || return 1
-        home="$DATA_VOLUME/Users/$username"
-    else
-        home="/Users/$username"
-    fi
-    report=$(
-        {
-        printf 'MDM DIAGNOSTICS — version %s\nEnvironment: %s\nUsername: %s\n' "$SCRIPT_VERSION" "$environment" "$username"
-        if [ "$environment" = recovery ]; then
-            printf 'Selected Data volume: %s\n' "$DATA_VOLUME"
-        fi
-        printf '\n[1] Account: RecordName, UniqueID, GeneratedUID, NFSHomeDirectory\n'
-        if [ "$environment" = recovery ]; then
-            offline_dscl -read "/Users/$username" RecordName UniqueID GeneratedUID NFSHomeDirectory
-        else
-            dscl . -read "/Users/$username" RecordName UniqueID GeneratedUID NFSHomeDirectory
-        fi
-        printf 'Account query exit: %s\n' "$?"
-        printf '\n[2] Admin group: GroupMembership, GroupMembers\n'
-        if [ "$environment" = recovery ]; then
-            offline_dscl -read /Groups/admin GroupMembership GroupMembers
-        else
-            dscl . -read /Groups/admin GroupMembership GroupMembers
-        fi
-        printf 'Admin group query exit: %s\n' "$?"
-        printf '\n[3] Home folder: %s\n' "$home"
-        ls -ld "$home"
-        printf 'Home query exit: %s\n' "$?"
-        printf '\nEND DIAGNOSTICS — không sửa tài khoản/nhóm/home; không đọc mật khẩu hoặc password hash.\n'
-        } 2>&1
-    )
-    printf '\n%s\n' "$report"
-    logfile=$(mktemp "${TMPDIR:-/tmp}/mdm-diagnostic.XXXXXX") || {
-        fail 'Không tạo được file báo cáo tạm; kết quả vẫn có ở trên.'; return 1;
-    }
-    if ! printf '%s\n' "$report" > "$logfile"; then
-        rm -f "$logfile"
-        fail 'Không lưu được báo cáo tạm; kết quả vẫn có ở trên.'; return 1
-    fi
-    LAST_DIAGNOSTIC_FILE=$logfile
-    printf '\nFile báo cáo: %s\nBạn có thể chụp phần kết quả hoặc chuyển file này sang máy đang chạy Codex.\n' "$logfile"
-}
-
-diagnose_account_prompt() {
-    local username default_username=${LAST_ATTEMPT_USERNAME:-kaitiz} answer
-    read -r -p "Username cần kiểm tra [${default_username}]: " username || return 1
-    username=${username:-$default_username}
-    diagnose_user_auto "$username" || return 1
-    read -r -p 'Nhấn Enter để quay lại menu...' answer || :
-}
-
-# Repair only an already-existing ordinary account. Never recreate the record,
-# reset its password, change its UID/UUID or delete its home on failure.
-repair_offline_account() (
-    repair_name=$1 repair_uid= repair_guid= repair_gid= repair_home= repair_record= repair_backup= repair_lock=
-    [[ "$repair_name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Username không hợp lệ.'; exit 1; }
-    validate_offline_layout || exit 1
-    repair_record="$DSLOCAL_PATH/users/$repair_name.plist"
-    [ -f "$repair_record" ] && [ ! -L "$repair_record" ] || { fail 'Không có bản ghi tài khoản hợp lệ để khôi phục.'; exit 1; }
-    repair_uid=$(plist_get "$repair_record" :uid:0) &&
-        [[ "$repair_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$repair_uid))" -ge 501 ] && [ "$((10#$repair_uid))" -le 60000 ] || {
-        fail 'Không khôi phục tài khoản hệ thống hoặc UID ngoài phạm vi hỗ trợ.'; exit 1;
-    }
-    repair_guid=$(plist_get "$repair_record" :generateduid:0) &&
-        [[ "$repair_guid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
-        fail 'GeneratedUID không hợp lệ; không thay đổi tài khoản.'; exit 1;
-    }
-    [ "$(plist_get "$repair_record" :name:0)" = "$repair_name" ] &&
-        [ "$(plist_get "$repair_record" :home:0)" = "/Users/$repair_name" ] || {
-        fail 'Tên tài khoản hoặc đường dẫn home không khớp; không tự sửa bản ghi.'; exit 1;
-    }
-    repair_gid=$(plist_get "$repair_record" :gid:0) && [ "$repair_gid" = 20 ] || {
-        fail 'Tài khoản không có nhóm chính staff (20) như tài khoản do script tạo.'; exit 1;
-    }
-    plist_get "$repair_record" :ShadowHashData:0 >/dev/null || { fail 'Không có password hash hiện tại; cần kiểm tra riêng, không tự đặt lại mật khẩu.'; exit 1; }
-    repair_home="$DATA_VOLUME/Users/$repair_name"
-    if [ -e "$repair_home" ] || [ -L "$repair_home" ]; then
-        [ -d "$repair_home" ] && [ ! -L "$repair_home" ] &&
-            [ "$(stat -f '%u:%g' "$repair_home")" = "$repair_uid:$repair_gid" ] || {
-            fail 'Home đang tồn tại nhưng có kiểu/chủ sở hữu khác dự kiến; không ghi đè.'; exit 1;
-        }
-    fi
-    repair_lock="$DATA_VOLUME/private/var/db/.kaitiz-mdm-account.lock"
-    mkdir "$repair_lock" || { fail "Một tác vụ có thể đang chạy. Kiểm tra: $repair_lock"; exit 1; }
-    trap 'rmdir "$repair_lock"' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    load_offline_users && find_offline_admins || exit 1
-    repair_backup=$(mktemp -d "$DATA_VOLUME/private/var/db/kaitiz-mdm-backup.XXXXXX") || exit 1
-    chmod 700 "$repair_backup" || exit 1
-    run_checked 'Backing up admin group before repair' cp -p "$DSLOCAL_PATH/groups/admin.plist" "$repair_backup/admin.plist" || exit 1
-    printf 'Khôi phục %s (UID %s). Group backup: %s\n' "$repair_name" "$repair_uid" "$repair_backup"
-    printf 'Giữ nguyên bản ghi, mật khẩu, UID và UUID. Nếu lỗi sẽ không xóa tài khoản/home.\n'
-    if [ ! -d "$repair_home" ]; then
-        run_checked 'Restoring missing empty home' mkdir -m 700 "$repair_home" || exit 1
-        run_checked 'Setting restored home ownership' chown "$repair_uid:$repair_gid" "$repair_home" || exit 1
-        run_checked 'Setting restored home permissions' chmod 700 "$repair_home" || exit 1
-    fi
-    if ! run_checked 'Restoring admin name membership' offline_dscl -merge /Groups/admin GroupMembership "$repair_name"; then
-        verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || :
-        exit 1
-    fi
-    if ! run_checked 'Restoring admin UUID membership' offline_dscl -merge /Groups/admin GroupMembers "$repair_guid"; then
-        verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || :
-        exit 1
-    fi
-    verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || exit 1
-    verify_offline_admin "$repair_name" "$repair_uid" "$repair_guid" 0 "$repair_backup" || exit 1
-    printf 'Đã xác minh lại quyền admin và home của %s trên ổ đích.\n' "$repair_name"
-    printf 'Chưa xác minh đăng nhập/Secure Token; chưa đánh dấu Apple Setup Done. Chọn mục 6 để lấy báo cáo mới.\n'
-)
-
-repair_account_prompt() {
-    local username answer default_username=${LAST_ATTEMPT_USERNAME:-kaitiz}
-    detect_environment || return 1
-    [ "$CURRENT_ENV" = recovery ] || { fail 'Khôi phục tài khoản ngoại tuyến cần chạy trong Recovery.'; return 1; }
-    prepare_recovery_target || return 1
-    read -r -p "Tài khoản cần khôi phục [${default_username}]: " username || return 1
-    username=${username:-$default_username}
-    printf 'Volume: %s\nTài khoản: %s\nSẽ tạo lại home rỗng nếu thiếu và thêm quyền admin; không đặt lại mật khẩu.\n' "$DATA_VOLUME" "$username"
-    read -r -p 'Khôi phục tài khoản này? (y/N): ' answer || return 1
-    case "$answer" in y|Y|yes|YES) ;; *) printf 'Đã hủy; chưa thay đổi dữ liệu.\n'; return 0;; esac
-    repair_offline_account "$username"
-    local result=$?
-    read -r -p 'Nhấn Enter để quay lại menu...' answer || :
-    return "$result"
-}
-
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
@@ -919,8 +868,6 @@ show_menu() {
     echo '3. Kiểm tra trạng thái MDM'
     echo '4. Xem file hosts'
     echo '5. Quản lý tài khoản root'
-    echo '6. Chẩn đoán tài khoản / lỗi rollback (chỉ đọc)'
-    echo '7. Khôi phục tài khoản còn sót sau rollback'
     echo '0. Thoát'
     echo ''
 }
@@ -946,8 +893,6 @@ handle_choice() {
         3) check_enrollment_auto;;
         4) show_hosts_auto;;
         5) handle_root_menu;;
-        6) diagnose_account_prompt;;
-        7) repair_account_prompt;;
         *) fail 'Lựa chọn không hợp lệ.';;
     esac
 }
@@ -978,21 +923,16 @@ main() {
             # Read-only discovery: no changes to the selected installation.
             select_macos_data
             return $?;;
-        --diagnose-user)
-            [ "$#" -eq 2 ] || { fail 'Usage: bash mdm1.sh --diagnose-user USER'; return 1; }
-            diagnose_user_auto "$2"
-            return $?;;
         --check-user)
             [ "$#" -eq 2 ] || { fail 'Usage: bash mdm1.sh --check-user USER'; return 1; }
             check_live_user "$2"
             return $?;;
         --help|-h)
-            printf 'Usage: bash mdm1.sh [--environment | --detect | --diagnose-user USER | --check-user USER | --help]\n'
+            printf 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n'
             printf 'Unlock/mount the macOS Data volume in Disk Utility first.\n'
             printf '%s\n' '--environment reports the detected environment without changing the installation.'
             printf '%s\n' '--detect only lists/selects a mounted macOS Data volume.'
             printf '%s\n' '--check-user USER prints account/token/APFS reports in the installed macOS.'
-            printf '%s\n' '--diagnose-user USER reads account/group/home state in Recovery or macOS and saves a temporary report.'
             return 0;;
         '') ;;
         *) fail "Unknown option: $1"; return 1;;
