@@ -7,7 +7,6 @@
 # and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.10
 
 
 # This is script text only. Never export LANG/LC_* or write macOS preferences
@@ -205,7 +204,15 @@ update_profile_settings() (
             fail "$(ui_text 'Unexpected profile marker type:' 'Marker profile có kiểu không hợp lệ:') $marker_settings/$marker_name"; exit 1;
         }
     done
-    marker_backup=$("${marker_privilege[@]}" mktemp -d "$marker_settings/.kaitiz-marker-backup.XXXXXX") || exit 1
+    # Settings may reject new entries even when specific marker operations are
+    # permitted. Keep the backup in the target installation's persistent var/tmp.
+    marker_backup_root="$marker_prefix/private/var/tmp"
+    "${marker_privilege[@]}" test -d "$marker_backup_root" && ! "${marker_privilege[@]}" test -L "$marker_backup_root" || {
+        fail "$(ui_text 'Missing or redirected backup directory:' 'Thư mục sao lưu thiếu hoặc bị chuyển hướng:') $marker_backup_root"; exit 1;
+    }
+    marker_backup=$("${marker_privilege[@]}" mktemp -d "$marker_backup_root/kaitiz-mdm-markers.XXXXXX") || {
+        fail "$(ui_text 'Cannot create marker backup in:' 'Không tạo được bản sao lưu marker tại:') $marker_backup_root"; exit 1;
+    }
     marker_cleanup() {
         local status=$? rollback_failed=0 name
         trap - EXIT INT TERM
@@ -756,24 +763,32 @@ as_admin() {
 # Do not infer whether a specific operation is allowed from SIP status.
 # Attempt the operation with the required privileges and preserve its real error.
 handle_notifications() {
+    local removal_result=0 marker_result=0 hosts_result=0
     detect_environment || return 1
     case "$CURRENT_ENV" in
         recovery)
             printf "$(ui_text 'Environment: Recovery — working on the selected macOS volume.\n' 'Môi trường: Recovery — thao tác trên volume macOS được chọn.\n')"
             prepare_recovery_target || return 1
-            update_profile_settings "$DATA_VOLUME" || return 1
-            apply_hosts_for_context recovery || return 1
+            update_profile_settings "$DATA_VOLUME" || marker_result=1
+            apply_hosts_for_context recovery || hosts_result=1
             ;;
         macos)
             printf "$(ui_text 'Environment: macOS — working on the running installation.\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n')"
+            printf "$(ui_text 'Removing all removable configuration profiles, including any Wi-Fi/VPN settings they contain.\n' 'Gỡ mọi configuration profile có thể gỡ, gồm cả cấu hình Wi-Fi/VPN bên trong.\n')"
+            run_checked "$(ui_text 'Removing configuration profiles' 'Gỡ configuration profiles')" as_admin profiles remove -all || removal_result=1
             update_profile_settings "" as_admin || {
-                fail "$(ui_text 'Cannot update markers; see the error above. You can retry this action in Recovery.' 'Không sửa được marker; xem lỗi ở trên. Có thể thử lại mục này trong Recovery.')"
-                return 1
+                fail "$(ui_text 'Cannot update markers; see the error above. Retry marker changes in Recovery.' 'Không sửa được marker; xem lỗi ở trên. Chạy phần sửa marker trong Recovery.')"
+                marker_result=1
             }
-            apply_hosts_for_context live || return 1
+            apply_hosts_for_context live || hosts_result=1
             ;;
     esac
-    printf "$(ui_text 'Local markers updated. This does not confirm release from MDM.\n' 'Đã xử lý các marker cục bộ. Đây không phải xác nhận thiết bị đã được gỡ khỏi MDM.\n')"
+    if [ "$removal_result:$marker_result:$hosts_result" != 0:0:0 ]; then
+        fail "$(ui_text 'Some steps did not complete. Review the errors above; do not assume all profiles were removed.' 'Một số bước chưa hoàn tất. Xem lỗi ở trên; chưa kết luận đã gỡ hết profile.')"
+        return 1
+    fi
+    printf "$(ui_text 'Local processing completed. This does not confirm release from the organization.' 'Đã xử lý xong trên máy. Đây không phải xác nhận đã được tổ chức release.')"
+    printf '\n'
 }
 
 show_hosts_auto() {
@@ -791,22 +806,9 @@ check_enrollment_auto() {
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
         if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
-        settings="$DATA_VOLUME/private/var/db/ConfigurationProfiles/Settings"
-        [ -d "$settings" ] && [ ! -L "$settings" ] && [ -r "$settings" ] && [ -x "$settings" ] || {
-            fail "$(ui_text 'Cannot read the profile directory on the selected volume.' 'Không đọc được thư mục profile trên ổ đã chọn.')"; return 1;
-        }
-        printf "$(ui_text 'Recovery: showing local evidence on the selected volume only.\n' 'Recovery: chỉ xem dấu vết cục bộ trên volume đã chọn.\n')"
-        printf "$(ui_text 'These files cannot establish the active enrollment state.\n' 'Không thể kết luận trạng thái enrollment đang hoạt động bằng các file này.\n')"
-        for marker in .cloudConfigHasActivationRecord .cloudConfigRecordFound .cloudConfigProfileInstalled .cloudConfigRecordNotFound; do
-            if [ -L "$settings/$marker" ]; then
-                fail "$(ui_text "Marker is a symbolic link: $marker" "Marker là liên kết tượng trưng: $marker")"; return 1
-            elif [ -e "$settings/$marker" ]; then
-                printf "$(ui_text 'Present: %s\n' 'Có: %s\n')" "$marker"
-            else
-                printf "$(ui_text 'Absent: %s\n' 'Không có: %s\n')" "$marker"
-            fi
-        done
-        printf "$(ui_text 'To query the actual status, boot into macOS and select this item again.\n' 'Để xem trạng thái thực tế, khởi động vào macOS rồi chọn lại mục này.\n')"
+        printf '\n- Enrolled via DEP: Unknown\n- MDM enrollment: Unknown\n- Config profile: Offline (Recovery)\n\n'
+        printf "$(ui_text '→ Conclusion: Cannot determine blocking effectiveness in Recovery.\n' '→ Kết luận: Chưa thể xác nhận hiệu quả chặn trong Recovery.\n')"
+        printf "$(ui_text 'Note: Check again after booting into macOS.\n' 'Lưu ý: Kiểm tra lại sau khi đăng nhập macOS.\n')"
     else
         status_text=$(LC_ALL=C as_admin profiles status -type enrollment 2>&1); status_rc=$?
         config_text=$(LC_ALL=C as_admin profiles show -type enrollment 2>&1); config_rc=$?
@@ -839,7 +841,7 @@ blocked_host_count() {
 }
 
 summarize_mdm_status() {
-    local status_text=$1 status_rc=$2 config_text=$3 config_rc=$4 hosts=$5 mdm dep count config_state=unknown
+    local status_text=$1 status_rc=$2 config_text=$3 config_rc=$4 hosts=$5 mdm dep count config_state=unknown mdm_label dep_label config_label
     mdm=$(enrollment_field "$status_text" 'mdm enrollment')
     dep=$(enrollment_field "$status_text" 'enrolled via dep')
     [ "$status_rc" -eq 0 ] || { mdm=unknown; dep=unknown; }
@@ -851,33 +853,32 @@ summarize_mdm_status() {
         elif [ "$config_rc" -eq 0 ] && [ -n "$config_text" ]; then config_state=available; fi
     elif [ "$config_rc" -eq 0 ] && [ -n "$config_text" ]; then config_state=available;
     fi
-    printf "$(ui_text '\nLOCAL BLOCKING ASSESSMENT\n\n' '\nKẾT LUẬN CHẶN CỤC BỘ\n\n')"
-    if [ "$mdm" = yes ]; then
-        printf "$(ui_text 'MDM is still enrolled on this Mac. Blocking hosts does not remove existing management.\n' 'Máy vẫn đang enrolled MDM. Chặn hosts không gỡ quản lý đã có trên máy.\n')"
-    elif [ "$mdm" = no ] && [ "$config_state" = unavailable ] && [ "$count" = 5 ]; then
-        printf "$(ui_text 'Local blocking is configured and the results are consistent with it working.\n' 'Đã cấu hình chặn cục bộ; kết quả kiểm tra phù hợp với việc chặn đang hoạt động.\n')"
-        printf "$(ui_text 'The Mac reports no MDM enrollment, all 5 hosts are blocked, and cloud configuration was not retrieved.\n' 'Máy báo chưa enrolled MDM, đủ 5 host đã được chặn và không lấy được config từ cloud.\n')"
-        printf "$(ui_text 'The cloud error alone cannot prove the cause or guarantee suppression of every notification.\n' 'Riêng lỗi cloud không chứng minh được nguyên nhân hoặc bảo đảm mọi thông báo đều bị chặn.\n')"
-    elif [ "$mdm" = no ]; then
-        printf "$(ui_text 'The Mac reports no current MDM enrollment; blocking effectiveness is not confirmed.\n' 'Máy báo hiện chưa enrolled MDM; chưa đủ cơ sở xác nhận hiệu quả chặn.\n')"
-    else
-        printf "$(ui_text 'Unable to determine current MDM enrollment. No successful-blocking conclusion is made.\n' 'Chưa xác định được trạng thái enrolled MDM. Chưa kết luận chặn thành công.\n')"
-    fi
-    printf "$(ui_text '\nBlocking host entries: %s/5\n' '\nSố host được cấu hình chặn: %s/5\n')" "$count"
+    case "$mdm" in yes) mdm_label=Yes;; no) mdm_label=No;; *) mdm_label=Unknown;; esac
+    case "$dep" in yes) dep_label=Yes;; no) dep_label=No;; *) dep_label=Unknown;; esac
     case "$config_state" in
-        unavailable) printf "$(ui_text 'Cloud config: request failed. Blocking, connectivity or server issues may cause this.\n' 'Config cloud: truy vấn thất bại; có thể do chặn, kết nối mạng hoặc lỗi máy chủ.\n')";;
-        available) printf "$(ui_text 'Config: readable; it may come from a local cache.\n' 'Config: đọc được; dữ liệu có thể lấy từ cache cục bộ.\n')";;
-        limited) printf "$(ui_text 'Cloud query is rate-limited. This is not evidence of successful blocking.\n' 'Truy vấn cloud bị giới hạn lượt. Đây không phải bằng chứng chặn thành công.\n')";;
-        *) printf "$(ui_text 'Config: query result is inconclusive.\n' 'Config: chưa xác định được kết quả truy vấn.\n')";;
+        unavailable) config_label='Fail to request configuration from cloud';;
+        available) config_label='Retrieved (possibly cached)';;
+        limited) config_label='Rate limited';;
+        *) config_label='Unknown / query failed';;
     esac
-    case "$dep" in
-        yes) printf "$(ui_text '\nDEP/ADE: this Mac reports enrollment through automated device enrollment.\n' '\nDEP/ADE: máy báo được đăng ký qua chương trình đăng ký thiết bị tự động.\n')";;
-        no) printf "$(ui_text '\nDEP/ADE: this Mac does not report enrollment through that method.\n' '\nDEP/ADE: máy không báo enrolled qua phương thức này.\n')";;
-        *) printf "$(ui_text '\nDEP/ADE: unknown.\n' '\nDEP/ADE: chưa xác định.\n')";;
-    esac
-    printf "$(ui_text 'DEP/ADE is separate from current MDM enrollment; neither field proves release from the organization on Apple servers.\n' 'DEP/ADE khác với trạng thái enrolled MDM hiện tại; các dòng này không xác nhận máy đã được tổ chức release trên hệ thống Apple.\n')"
-    if [ "$mdm" = unknown ] || [ "$config_state" = unknown ] || [ "$config_state" = limited ]; then
-        printf "$(ui_text '\nQuery details (status exit %s; config exit %s):\n%s\n%s\n' '\nChi tiết truy vấn (mã thoát status %s; config %s):\n%s\n%s\n')" "$status_rc" "$config_rc" "$status_text" "$config_text"
+    printf '\n- Enrolled via DEP: %s\n- MDM enrollment: %s\n- Config profile: %s\n\n' "$dep_label" "$mdm_label" "$config_label"
+    if [ "$mdm" = yes ]; then
+        printf "$(ui_text '→ Conclusion: Not blocked completely — MDM is still enrolled.\n' '→ Kết luận: Chưa chặn hoàn toàn — máy vẫn enrolled MDM.\n')"
+        printf "$(ui_text 'Note: Blocking hosts does not remove existing management.\n' 'Lưu ý: Chặn hosts không gỡ quản lý đã có.\n')"
+    elif [ "$mdm" = no ] && [ "$config_state" = unavailable ] && [ "$count" = 5 ]; then
+        printf "$(ui_text '→ Conclusion: Local blocking appears effective based on these checks.\n' '→ Kết luận: Chặn cục bộ có dấu hiệu thành công theo kết quả kiểm tra.\n')"
+        printf "$(ui_text 'Note: Network errors can also cause cloud failures; this does not confirm release from the organization.\n' 'Lưu ý: Lỗi mạng cũng có thể gây lỗi cloud; kết quả này không xác nhận máy đã được tổ chức release.\n')"
+    else
+        printf "$(ui_text '→ Conclusion: Blocking success is not confirmed.\n' '→ Kết luận: Chưa đủ cơ sở xác nhận chặn thành công.\n')"
+        if [ "$config_state" = limited ]; then
+            printf "$(ui_text 'Note: Cloud queries are rate-limited; check again later.\n' 'Lưu ý: Truy vấn cloud bị giới hạn lượt; kiểm tra lại sau.\n')"
+        elif [ "$mdm" = unknown ]; then
+            printf "$(ui_text 'Note: Cannot read enrollment status; check administrator permissions.\n' 'Lưu ý: Không đọc được trạng thái enrollment; kiểm tra quyền quản trị.\n')"
+        elif [ "$count" != 5 ]; then
+            printf "$(ui_text 'Note: Blocking hosts found: %s/5. A cloud error alone is insufficient.\n' 'Lưu ý: Hosts được chặn: %s/5. Riêng lỗi cloud chưa đủ để kết luận.\n')" "$count"
+        else
+            printf "$(ui_text 'Note: Configuration may be cached, or the cloud query result is inconclusive.\n' 'Lưu ý: Config có thể từ cache hoặc kết quả truy vấn cloud chưa xác định.\n')"
+        fi
     fi
 }
 
@@ -952,7 +953,6 @@ credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
     echo ''
-    printf "$(ui_text 'Version: %s\n' 'Phiên bản: %s\n')" "$SCRIPT_VERSION"
     echo '============================================='
     if detect_environment; then
         case "$CURRENT_ENV" in
@@ -1006,7 +1006,7 @@ main() {
     case "${1:-}" in
         --environment)
             detect_environment || return 1
-            printf "$(ui_text 'Version: %s\nEnvironment: %s\n' 'Phiên bản: %s\nMôi trường: %s\n')" "$SCRIPT_VERSION" "$CURRENT_ENV"
+            printf "$(ui_text 'Environment: %s\n' 'Môi trường: %s\n')" "$CURRENT_ENV"
             return 0;;
         --detect)
             # Read-only discovery: no changes to the selected installation.
