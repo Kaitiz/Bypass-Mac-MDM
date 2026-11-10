@@ -23,13 +23,13 @@ clear_screen() {
 }
 
 read_menu_choice() {
-    printf '\n%s ' "$1"
+    printf '\n=============================================\n\n%s ' "$1"
     read -r "$2"
 }
 
 read_ui_input() {
     local input_status
-    printf '\n%s' "$1"
+    printf '\n=============================================\n\n%s' "$1"
     read -r "$2"
     input_status=$?
     printf '\n'
@@ -781,6 +781,12 @@ as_admin() {
 
 # Do not infer whether a specific operation is allowed from SIP status.
 # Attempt the operation with the required privileges and preserve its real error.
+remove_profiles_noninteractive() {
+    /usr/bin/yes y | as_admin profiles remove -all
+    local removal_status=${PIPESTATUS[1]}
+    return "$removal_status"
+}
+
 handle_notifications() {
     local removal_result=0 marker_result=0 hosts_result=0
     detect_environment || return 1
@@ -794,7 +800,7 @@ handle_notifications() {
         macos)
             printf "$(ui_text 'Environment: macOS — working on the running installation.\n\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n\n')"
             printf "$(ui_text 'Removing all removable configuration profiles, including any Wi-Fi/VPN settings they contain.\n\n' 'Gỡ mọi configuration profile có thể gỡ, gồm cả cấu hình Wi-Fi/VPN bên trong.\n\n')"
-            run_checked "$(ui_text 'Removing configuration profiles' 'Gỡ configuration profiles')" as_admin profiles remove -all || removal_result=1
+            run_checked "$(ui_text 'Removing configuration profiles' 'Gỡ configuration profiles')" remove_profiles_noninteractive || removal_result=1
             printf '\n'
             apply_hosts_for_context live || hosts_result=1
             ;;
@@ -824,7 +830,6 @@ check_enrollment_auto() {
         if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
         printf '\n- Enrolled via DEP: Unknown\n- MDM enrollment: Unknown\n- Config profile: Offline (Recovery)\n\n'
         printf "$(ui_text '→ Conclusion: Cannot determine blocking effectiveness in Recovery.\n\n' '→ Kết luận: Chưa thể xác nhận hiệu quả chặn trong Recovery.\n\n')"
-        printf "$(ui_text 'Note: Check again after booting into macOS.\n\n' 'Lưu ý: Kiểm tra lại sau khi đăng nhập macOS.\n\n')"
     else
         status_text=$(LC_ALL=C as_admin profiles status -type enrollment 2>&1); status_rc=$?
         config_text=$(LC_ALL=C as_admin profiles show -type enrollment 2>&1); config_rc=$?
@@ -880,21 +885,10 @@ summarize_mdm_status() {
     printf '\n- Enrolled via DEP: %s\n- MDM enrollment: %s\n- Config profile: %s\n\n' "$dep_label" "$mdm_label" "$config_label"
     if [ "$mdm" = yes ]; then
         printf "$(ui_text '→ Conclusion: Not blocked completely — MDM is still enrolled.\n\n' '→ Kết luận: Chưa chặn hoàn toàn — máy vẫn enrolled MDM.\n\n')"
-        printf "$(ui_text 'Note: Blocking hosts does not remove existing management.\n\n' 'Lưu ý: Chặn hosts không gỡ quản lý đã có.\n\n')"
     elif [ "$mdm" = no ] && [ "$config_state" = unavailable ] && [ "$count" = 5 ]; then
         printf "$(ui_text '→ Conclusion: Local blocking appears effective based on these checks.\n\n' '→ Kết luận: Chặn cục bộ có dấu hiệu thành công theo kết quả kiểm tra.\n\n')"
-        printf "$(ui_text 'Note: Network errors can also prevent downloading the configuration from the cloud.\n\n' 'Lưu ý: Lỗi mạng cũng có thể gây ra lỗi không tải được config từ cloud.\n\n')"
     else
         printf "$(ui_text '→ Conclusion: Blocking success is not confirmed.\n\n' '→ Kết luận: Chưa đủ cơ sở xác nhận chặn thành công.\n\n')"
-        if [ "$config_state" = limited ]; then
-            printf "$(ui_text 'Note: Cloud queries are rate-limited; check again later.\n\n' 'Lưu ý: Truy vấn cloud bị giới hạn lượt; kiểm tra lại sau.\n\n')"
-        elif [ "$mdm" = unknown ]; then
-            printf "$(ui_text 'Note: Cannot read enrollment status; check administrator permissions.\n\n' 'Lưu ý: Không đọc được trạng thái enrollment; kiểm tra quyền quản trị.\n\n')"
-        elif [ "$count" != 5 ]; then
-            printf "$(ui_text 'Note: Blocking hosts found: %s/5. A cloud error alone is insufficient.\n\n' 'Lưu ý: Hosts được chặn: %s/5. Riêng lỗi cloud chưa đủ để kết luận.\n\n')" "$count"
-        else
-            printf "$(ui_text 'Note: Configuration may be cached, or the cloud query result is inconclusive.\n\n' 'Lưu ý: Config có thể từ cache hoặc kết quả truy vấn cloud chưa xác định.\n\n')"
-        fi
     fi
 }
 
@@ -919,10 +913,41 @@ handle_inspection_menu() {
     done
 }
 
+interactive_input() { [ -t 0 ]; }
+
+reboot_countdown() {
+    local seconds reply input_status
+    REBOOT_CANCELLED=0
+    if ! interactive_input; then
+        REBOOT_CANCELLED=1
+        return 0
+    fi
+    printf '\n=============================================\n\n'
+    for ((seconds=10; seconds>0; seconds--)); do
+        printf '\r\033[K'
+        printf "$(ui_text 'Restarting in %s seconds. Press Enter to cancel.' 'Khởi động lại sau %s giây. Nhấn Enter để hủy.')" "$seconds"
+        if read -r -t 1 reply; then
+            printf '\n\n'
+            REBOOT_CANCELLED=1
+            return 0
+        else
+            input_status=$?
+            if [ "$input_status" -le 128 ]; then
+                printf '\n'
+                REBOOT_CANCELLED=1
+                return 0
+            fi
+        fi
+    done
+    printf '\n\n'
+    run_checked "$(ui_text 'Restarting' 'Khởi động lại')" as_admin /sbin/reboot
+}
+
 create_admin_auto() {
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
-        continue_recovery_setup
+        continue_recovery_setup || return 1
+        reboot_countdown
     else
         fail "$(ui_text 'This action is only available in Recovery. Restart into macOS Recovery, open Terminal, and run the script again.' 'Chức năng này chỉ chạy trong Recovery. Hãy khởi động vào macOS Recovery, mở Terminal và chạy lại script.')"
         return 1
@@ -932,8 +957,8 @@ create_admin_auto() {
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
-    echo ''
     echo '============================================='
+    echo ''
     if detect_environment; then
         case "$CURRENT_ENV" in
             recovery) echo "$(ui_text 'Environment: Recovery' 'Môi trường: Recovery')";;
@@ -1017,6 +1042,7 @@ main() {
         credit
         printf '\n'
         handle_choice "$choice"
+        if [ "${REBOOT_CANCELLED:-0}" = 1 ]; then REBOOT_CANCELLED=0; continue; fi
         printf '\n\n'
         read_ui_input "$(ui_text 'Press Enter to return to the menu...' 'Nhấn Enter để quay lại menu...')" menu_return || break
     done
