@@ -7,7 +7,7 @@
 # and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.9
+SCRIPT_VERSION=2026.11.11.10
 
 
 # This is script text only. Never export LANG/LC_* or write macOS preferences
@@ -24,7 +24,7 @@ clear_screen() {
 }
 
 read_menu_choice() {
-    printf '\n%s\n> ' "$1"
+    printf '\n%s ' "$1"
     read -r "$2"
 }
 
@@ -787,7 +787,7 @@ show_hosts_auto() {
 }
 
 check_enrollment_auto() {
-    local settings marker
+    local settings marker status_text status_rc config_text config_rc count
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
         if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
@@ -808,24 +808,98 @@ check_enrollment_auto() {
         done
         printf "$(ui_text 'To query the actual status, boot into macOS and select this item again.\n' 'Để xem trạng thái thực tế, khởi động vào macOS rồi chọn lại mục này.\n')"
     else
-        run_checked "$(ui_text 'Checking enrollment status' 'Kiểm tra trạng thái đăng ký quản lý')" as_admin profiles status -type enrollment || return 1
-        run_checked "$(ui_text 'Reading enrollment configuration' 'Đọc cấu hình đăng ký quản lý')" as_admin profiles show -type enrollment || return 1
-        printf "$(ui_text 'Reports retrieved. Review their contents; command failure does not mean MDM was removed.\n' 'Đã lấy báo cáo. Hãy đọc nội dung; lỗi lệnh không đồng nghĩa với đã gỡ MDM.\n')"
+        status_text=$(LC_ALL=C as_admin profiles status -type enrollment 2>&1); status_rc=$?
+        config_text=$(LC_ALL=C as_admin profiles show -type enrollment 2>&1); config_rc=$?
+        summarize_mdm_status "$status_text" "$status_rc" "$config_text" "$config_rc" /private/etc/hosts
+        [ "$status_rc" -eq 0 ] || return 1
+
     fi
 }
 
-inspect_mdm_and_hosts() {
-    local result=0 context=live
-    detect_environment || return 1
-    if [ "$CURRENT_ENV" = recovery ]; then
-        select_macos_data || return 1
-        context=selected
+# Parse only the explicit native fields. Conflicting/unrecognized output stays
+# unknown; command failures and cloud errors are never treated as unenrollment.
+enrollment_field() {
+    printf '%s\n' "$1" | awk -F: -v field="$2" '
+        { key=tolower($1); gsub(/^[ \t]+|[ \t]+$/, "", key)
+          if (key==field || (field=="enrolled via dep" && key=="enrolled via ade")) {
+            v=tolower($2); sub(/^[ \t]+/, "", v)
+            if(v ~ /^yes([ \t(]|$)/) nextvalue="yes"; else if(v ~ /^no([ \t(]|$)/) nextvalue="no"; else nextvalue="unknown"
+            if(seen && value!=nextvalue) conflict=1; value=nextvalue;seen=1
+          }
+        } END { if(!seen || conflict) print "unknown"; else print value }'
+}
+
+blocked_host_count() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    awk '
+        BEGIN { wanted["deviceenrollment.apple.com"]=1;wanted["mdmenrollment.apple.com"]=1;wanted["iprofiles.apple.com"]=1;wanted["acmdm.apple.com"]=1;wanted["axm-adm-mdm.apple.com"]=1 }
+        { sub(/#.*/, ""); if($1=="0.0.0.0" || $1=="127.0.0.1" || $1=="::1")
+            for(i=2;i<=NF;i++) if(tolower($i) in wanted) found[tolower($i)]=1 }
+        END { for(k in found) count++; print count+0 }' "$1"
+}
+
+summarize_mdm_status() {
+    local status_text=$1 status_rc=$2 config_text=$3 config_rc=$4 hosts=$5 mdm dep count config_state=unknown
+    mdm=$(enrollment_field "$status_text" 'mdm enrollment')
+    dep=$(enrollment_field "$status_text" 'enrolled via dep')
+    [ "$status_rc" -eq 0 ] || { mdm=unknown; dep=unknown; }
+    count=$(blocked_host_count "$hosts") || count=unknown
+    if printf '%s\n' "$config_text" | grep -Eiq 'rate.?limit|too many requests|429|limit.*(23|24).*hours'; then
+        config_state=limited
+    elif printf '%s\n' "$config_text" | grep -Eiq 'cloud|device enrollment|DEP'; then
+        if printf '%s\n' "$config_text" | grep -Eiq 'fail|error|unable|cannot'; then config_state=unavailable;
+        elif [ "$config_rc" -eq 0 ] && [ -n "$config_text" ]; then config_state=available; fi
+    elif [ "$config_rc" -eq 0 ] && [ -n "$config_text" ]; then config_state=available;
     fi
-    printf "$(ui_text '\nMDM status:\n' '\nTrạng thái MDM:\n')"
-    check_enrollment_auto "$context" || result=1
-    printf "$(ui_text '\nHosts file:\n' '\nFile hosts:\n')"
-    show_hosts_auto "$context" || result=1
-    return "$result"
+    printf "$(ui_text '\nLOCAL BLOCKING ASSESSMENT\n\n' '\nKẾT LUẬN CHẶN CỤC BỘ\n\n')"
+    if [ "$mdm" = yes ]; then
+        printf "$(ui_text 'MDM is still enrolled on this Mac. Blocking hosts does not remove existing management.\n' 'Máy vẫn đang enrolled MDM. Chặn hosts không gỡ quản lý đã có trên máy.\n')"
+    elif [ "$mdm" = no ] && [ "$config_state" = unavailable ] && [ "$count" = 5 ]; then
+        printf "$(ui_text 'Local blocking is configured and the results are consistent with it working.\n' 'Đã cấu hình chặn cục bộ; kết quả kiểm tra phù hợp với việc chặn đang hoạt động.\n')"
+        printf "$(ui_text 'The Mac reports no MDM enrollment, all 5 hosts are blocked, and cloud configuration was not retrieved.\n' 'Máy báo chưa enrolled MDM, đủ 5 host đã được chặn và không lấy được config từ cloud.\n')"
+        printf "$(ui_text 'The cloud error alone cannot prove the cause or guarantee suppression of every notification.\n' 'Riêng lỗi cloud không chứng minh được nguyên nhân hoặc bảo đảm mọi thông báo đều bị chặn.\n')"
+    elif [ "$mdm" = no ]; then
+        printf "$(ui_text 'The Mac reports no current MDM enrollment; blocking effectiveness is not confirmed.\n' 'Máy báo hiện chưa enrolled MDM; chưa đủ cơ sở xác nhận hiệu quả chặn.\n')"
+    else
+        printf "$(ui_text 'Unable to determine current MDM enrollment. No successful-blocking conclusion is made.\n' 'Chưa xác định được trạng thái enrolled MDM. Chưa kết luận chặn thành công.\n')"
+    fi
+    printf "$(ui_text '\nBlocking host entries: %s/5\n' '\nSố host được cấu hình chặn: %s/5\n')" "$count"
+    case "$config_state" in
+        unavailable) printf "$(ui_text 'Cloud config: request failed. Blocking, connectivity or server issues may cause this.\n' 'Config cloud: truy vấn thất bại; có thể do chặn, kết nối mạng hoặc lỗi máy chủ.\n')";;
+        available) printf "$(ui_text 'Config: readable; it may come from a local cache.\n' 'Config: đọc được; dữ liệu có thể lấy từ cache cục bộ.\n')";;
+        limited) printf "$(ui_text 'Cloud query is rate-limited. This is not evidence of successful blocking.\n' 'Truy vấn cloud bị giới hạn lượt. Đây không phải bằng chứng chặn thành công.\n')";;
+        *) printf "$(ui_text 'Config: query result is inconclusive.\n' 'Config: chưa xác định được kết quả truy vấn.\n')";;
+    esac
+    case "$dep" in
+        yes) printf "$(ui_text '\nDEP/ADE: this Mac reports enrollment through automated device enrollment.\n' '\nDEP/ADE: máy báo được đăng ký qua chương trình đăng ký thiết bị tự động.\n')";;
+        no) printf "$(ui_text '\nDEP/ADE: this Mac does not report enrollment through that method.\n' '\nDEP/ADE: máy không báo enrolled qua phương thức này.\n')";;
+        *) printf "$(ui_text '\nDEP/ADE: unknown.\n' '\nDEP/ADE: chưa xác định.\n')";;
+    esac
+    printf "$(ui_text 'DEP/ADE is separate from current MDM enrollment; neither field proves release from the organization on Apple servers.\n' 'DEP/ADE khác với trạng thái enrolled MDM hiện tại; các dòng này không xác nhận máy đã được tổ chức release trên hệ thống Apple.\n')"
+    if [ "$mdm" = unknown ] || [ "$config_state" = unknown ] || [ "$config_state" = limited ]; then
+        printf "$(ui_text '\nQuery details (status exit %s; config exit %s):\n%s\n%s\n' '\nChi tiết truy vấn (mã thoát status %s; config %s):\n%s\n%s\n')" "$status_rc" "$config_rc" "$status_text" "$config_text"
+    fi
+}
+
+handle_inspection_menu() {
+    local inspection_choice pause
+    while true; do
+        clear_screen
+        credit
+        printf "$(ui_text '\n1. View MDM notification blocking status\n\n2. View hosts file\n\n0. Back\n' '\n1. Xem trạng thái chặn thông báo MDM\n\n2. Xem file hosts\n\n0. Quay lại\n')"
+        read_menu_choice "$(ui_text 'Select an option:' 'Chọn chức năng:')" inspection_choice || return 0
+        [ "$inspection_choice" != 0 ] || return 0
+        clear_screen
+        credit
+        printf '\n'
+        case "$inspection_choice" in
+            1) check_enrollment_auto;;
+            2) show_hosts_auto;;
+            *) fail "$(ui_text 'Invalid selection.' 'Lựa chọn không hợp lệ.')";;
+        esac
+        printf '\n'
+        read -r -p "$(ui_text 'Press Enter to return...' 'Nhấn Enter để quay lại...')" pause || return 0
+    done
 }
 
 # Live creation uses macOS account services, not offline plist modification.
@@ -907,7 +981,7 @@ handle_choice() {
     case "$1" in
         1) create_admin_auto;;
         2) handle_notifications;;
-        3) inspect_mdm_and_hosts;;
+        3) handle_inspection_menu;;
         *) fail "$(ui_text 'Invalid selection.' 'Lựa chọn không hợp lệ.')";;
     esac
 }
@@ -958,6 +1032,7 @@ main() {
         show_menu
         read_menu_choice "$(ui_text 'Select an option:' 'Chọn chức năng:')" choice || break
         [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n' 'Đã thoát.\n')"; break; }
+        if [ "$choice" = 3 ]; then handle_inspection_menu; continue; fi
         clear_screen
         credit
         printf '\n'
