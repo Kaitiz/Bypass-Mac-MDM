@@ -916,28 +916,34 @@ handle_inspection_menu() {
 interactive_input() { [ -t 0 ]; }
 
 reboot_countdown() {
-    local seconds reply input_status
+    local seconds reply deadline last_seconds
     REBOOT_CANCELLED=0
     if ! interactive_input; then
         REBOOT_CANCELLED=1
         return 0
     fi
     printf '=============================================\n\n'
-    for ((seconds=10; seconds>0; seconds--)); do
-        printf '\r\033[K'
-        printf "$(ui_text 'Restarting in %s seconds. Press Enter to cancel.' 'Khởi động lại sau %s giây. Nhấn Enter để hủy.')" "$seconds"
-        if read -r -t 1 reply; then
-            printf '\n\n'
-            REBOOT_CANCELLED=1
-            return 0
-        else
-            input_status=$?
-            if [ "$input_status" -le 128 ]; then
-                printf '\n'
-                REBOOT_CANCELLED=1
-                return 0
-            fi
+    deadline=$((SECONDS + 10))
+    last_seconds=0
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        seconds=$((deadline - SECONDS))
+        if [ "$seconds" -ne "$last_seconds" ]; then
+            printf '\r\033[K'
+            printf "$(ui_text 'Restarting in %s seconds. Press C to cancel.' 'Khởi động lại sau %s giây. Nhấn C để hủy.')" "$seconds"
+            last_seconds=$seconds
         fi
+        reply=
+        if read -r -n 1 -t 1 reply; then
+            case "$reply" in
+                c|C)
+                    printf '\n\n'
+                    REBOOT_CANCELLED=1
+                    return 0
+                    ;;
+            esac
+        fi
+        # Timeout exit codes differ between Bash versions. Only C cancels;
+        # Enter and other keys never shorten the elapsed-time countdown.
     done
     printf '\n\n'
     run_checked "$(ui_text 'Restarting' 'Khởi động lại')" as_admin /sbin/reboot
