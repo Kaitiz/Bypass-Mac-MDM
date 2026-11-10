@@ -23,13 +23,13 @@ clear_screen() {
 }
 
 read_menu_choice() {
-    printf '\n=============================================\n\n%s ' "$1"
+    printf '=============================================\n\n%s ' "$1"
     read -r "$2"
 }
 
 read_ui_input() {
     local input_status
-    printf '\n=============================================\n\n%s' "$1"
+    printf '=============================================\n\n%s' "$1"
     read -r "$2"
     input_status=$?
     printf '\n'
@@ -45,8 +45,8 @@ select_ui_language() {
         printf '=============================================\n\n'
         printf 'Please select the script interface language:\n\n'
         printf '  1. English\n\n  2. Vietnamese\n\n'
-        printf 'This changes script text only, not the macOS language.\n'
-        if [ -n "$message" ]; then printf '\n%s\n' "$message"; fi
+        printf 'This changes script text only, not the macOS language.\n\n'
+        if [ -n "$message" ]; then printf '%s\n\n' "$message"; fi
         read_menu_choice 'Select language [1]:' choice || return 1
         case "$choice" in
             1|'') UI_LANGUAGE=en; return 0;;
@@ -623,7 +623,7 @@ create_offline_admin() (
 choose_setup_language() {
     local choice
     SETUP_LANGUAGE=keep
-    printf "$(ui_text '\nmacOS account language (separate from the script interface):\n1. English\n2. Vietnamese\n0. Keep current (Enter)\n' '\nNgôn ngữ tài khoản macOS (tách biệt với giao diện script):\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n')"
+    printf "$(ui_text '\nmacOS account language (separate from the script interface):\n1. English\n2. Vietnamese\n0. Keep current (Enter)\n\n' '\nNgôn ngữ tài khoản macOS (tách biệt với giao diện script):\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n\n')"
     while true; do
         read_ui_input "$(ui_text 'Select macOS account language: ' 'Chọn ngôn ngữ: ')" choice || return 0
         case "$choice" in
@@ -782,9 +782,13 @@ as_admin() {
 # Do not infer whether a specific operation is allowed from SIP status.
 # Attempt the operation with the required privileges and preserve its real error.
 remove_profiles_noninteractive() {
-    /usr/bin/yes y | as_admin profiles remove -all
-    local removal_status=${PIPESTATUS[1]}
-    return "$removal_status"
+    # Filter only the confirmation question; keep errors and the profiles exit
+    # code. sudo still reads administrator authentication from the terminal.
+    /usr/bin/yes y | LC_ALL=C as_admin profiles remove -all 2>&1 | /usr/bin/sed -E \
+        's/Are you sure you want to remove all[^?]*\?[[:space:]]*(\[[^]]*\])?[[:space:]]*:?[[:space:]]*//g; /^[[:space:]]*$/d'
+    local removal_codes=("${PIPESTATUS[@]}")
+    [ "${removal_codes[2]}" -eq 0 ] || return "${removal_codes[2]}"
+    return "${removal_codes[1]}"
 }
 
 handle_notifications() {
@@ -897,7 +901,7 @@ handle_inspection_menu() {
     while true; do
         clear_screen
         credit
-        printf "$(ui_text '\n1. View MDM notification blocking status\n\n2. View hosts file\n\n0. Back\n' '\n1. Xem trạng thái chặn thông báo MDM\n\n2. Xem file hosts\n\n0. Quay lại\n')"
+        printf "$(ui_text '\n1. View MDM notification blocking status\n\n2. View hosts file\n\n0. Back\n\n' '\n1. Xem trạng thái chặn thông báo MDM\n\n2. Xem file hosts\n\n0. Quay lại\n\n')"
         read_menu_choice "$(ui_text 'Select an option:' 'Chọn chức năng:')" inspection_choice || return 0
         [ "$inspection_choice" != 0 ] || return 0
         clear_screen
@@ -908,7 +912,6 @@ handle_inspection_menu() {
             2) show_hosts_auto;;
             *) fail "$(ui_text 'Invalid selection.' 'Lựa chọn không hợp lệ.')";;
         esac
-        printf '\n'
         read_ui_input "$(ui_text 'Press Enter to return...' 'Nhấn Enter để quay lại...')" pause || return 0
     done
 }
@@ -922,7 +925,7 @@ reboot_countdown() {
         REBOOT_CANCELLED=1
         return 0
     fi
-    printf '\n=============================================\n\n'
+    printf '=============================================\n\n'
     for ((seconds=10; seconds>0; seconds--)); do
         printf '\r\033[K'
         printf "$(ui_text 'Restarting in %s seconds. Press Enter to cancel.' 'Khởi động lại sau %s giây. Nhấn Enter để hủy.')" "$seconds"
@@ -1043,7 +1046,6 @@ main() {
         printf '\n'
         handle_choice "$choice"
         if [ "${REBOOT_CANCELLED:-0}" = 1 ]; then REBOOT_CANCELLED=0; continue; fi
-        printf '\n\n'
         read_ui_input "$(ui_text 'Press Enter to return to the menu...' 'Nhấn Enter để quay lại menu...')" menu_return || break
     done
 }
