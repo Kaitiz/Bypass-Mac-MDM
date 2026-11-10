@@ -278,13 +278,23 @@ write_blocked_hosts() {
 }
 
 apply_hosts_for_context() {
+    local hosts_path count
     if [ "$1" = recovery ]; then
         [ -n "$DATA_VOLUME" ] || { fail "$(ui_text 'No target selected.' 'Chưa chọn ổ đích.')"; return 1; }
-        write_blocked_hosts "$HOSTS_FILE"
+        hosts_path=$HOSTS_FILE
     else
-        write_blocked_hosts /private/etc/hosts as_admin
+        hosts_path=/private/etc/hosts
     fi
+    [ ! -L "$hosts_path" ] || { fail "$(ui_text 'Refusing symbolic-link hosts file.' 'Từ chối file hosts là symlink.')"; return 1; }
+    count=$(blocked_host_count "$hosts_path") || count=unknown
+    if [ "$count" = 5 ]; then
+        printf "$(ui_text 'Hosts already contains all 5 blocking entries; no changes needed.\n' 'Hosts đã có đủ 5 mục chặn; không cần ghi lại.\n')"
+        return 0
+    fi
+    if [ "$1" = recovery ]; then write_blocked_hosts "$hosts_path";
+    else write_blocked_hosts "$hosts_path" as_admin; fi
 }
+
 
 # -f with localonly exposes the external database as /Local/Target.
 # Do not use the live /Local/Default node when editing an offline installation.
@@ -776,10 +786,6 @@ handle_notifications() {
             printf "$(ui_text 'Environment: macOS — working on the running installation.\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n')"
             printf "$(ui_text 'Removing all removable configuration profiles, including any Wi-Fi/VPN settings they contain.\n' 'Gỡ mọi configuration profile có thể gỡ, gồm cả cấu hình Wi-Fi/VPN bên trong.\n')"
             run_checked "$(ui_text 'Removing configuration profiles' 'Gỡ configuration profiles')" as_admin profiles remove -all || removal_result=1
-            update_profile_settings "" as_admin || {
-                fail "$(ui_text 'Cannot update markers; see the error above. Retry marker changes in Recovery.' 'Không sửa được marker; xem lỗi ở trên. Chạy phần sửa marker trong Recovery.')"
-                marker_result=1
-            }
             apply_hosts_for_context live || hosts_result=1
             ;;
     esac
@@ -903,49 +909,13 @@ handle_inspection_menu() {
     done
 }
 
-# Live creation uses macOS account services, not offline plist modification.
-# No automatic deletion/rollback of a live account is attempted if verification
-# or a later notification step fails; report the created account explicitly.
-continue_live_setup() {
-    local full_name username names name folded home uid groups
-    # Creating a live admin does not require disabling SIP.
-    find_sysadminctl || return 1
-    printf "$(ui_text 'macOS: creating an admin with sysadminctl on the running installation.\n' 'macOS: tạo admin bằng sysadminctl trên hệ điều hành đang chạy.\n')"
-    read -r -p "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
-    read -r -p "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
-    valid_username "$username" || { fail "$(ui_text 'Invalid username.' 'Username không hợp lệ.')"; return 1; }
-    [ -n "$full_name" ] && [[ "$full_name" != *$'\r'* ]] || { fail "$(ui_text 'Invalid full name.' 'Full name không hợp lệ.')"; return 1; }
-    names=$(dscl . -list /Users) || { fail "$(ui_text 'Cannot read the account list.' 'Không đọc được danh sách tài khoản.')"; return 1; }
-    while IFS= read -r name; do
-        folded=$(printf '%s' "$name" | LC_ALL=C tr '[:upper:]' '[:lower:]') || return 1
-        [ "$folded" != "$username" ] || { fail "$(ui_text 'Username already exists.' 'Username đã tồn tại.')"; return 1; }
-    done <<< "$names"
-    home="/Users/$username"
-    [ ! -e "$home" ] && [ ! -L "$home" ] || { fail "$(ui_text 'Home folder already exists; refusing to overwrite it.' 'Home folder đã tồn tại; không ghi đè.')"; return 1; }
-    run_checked "$(ui_text 'Creating live admin account' 'Tạo tài khoản admin trong macOS')" as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
-        printf "$(ui_text 'If account creation made partial changes, inspect Users & Groups before retrying.\n' 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n')" >&2
-        return 1;
-    }
-    uid=$(id -u "$username") && groups=$(id -Gn "$username") || {
-        fail "$(ui_text "Cannot verify account $username. Inspect Users & Groups." "Không xác minh được tài khoản $username. Hãy kiểm tra Users & Groups.")"; return 1;
-    }
-    case " $groups " in
-        *' admin '*) ;;
-        *) fail "$(ui_text "Account $username is not verified as an admin. Markers have not been updated." "Tài khoản $username chưa được xác minh là admin. Chưa xử lý marker.")"; return 1;;
-    esac
-    printf "$(ui_text 'Admin %s created (UID %s). Secure Token and login have not been verified.\n' 'Đã tạo admin %s (UID %s). Secure Token và đăng nhập chưa được xác minh.\n')" "$username" "$uid"
-    update_profile_settings "" as_admin && apply_hosts_for_context live || {
-        fail "$(ui_text "Account $username still exists; notification handling did not complete." "Tài khoản $username vẫn tồn tại; bước xử lý thông báo chưa hoàn tất.")"; return 1;
-    }
-    printf "$(ui_text 'macOS workflow completed; AppleSetupDone was not changed on the running installation.\n' 'Đã hoàn thành luồng trong macOS; không sửa AppleSetupDone của hệ điều hành đang chạy.\n')"
-}
-
 create_admin_auto() {
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
         continue_recovery_setup
     else
-        continue_live_setup
+        fail "$(ui_text 'This action is only available in Recovery. Restart into macOS Recovery, open Terminal, and run the script again.' 'Chức năng này chỉ chạy trong Recovery. Hãy khởi động vào macOS Recovery, mở Terminal và chạy lại script.')"
+        return 1
     fi
 }
 
@@ -967,7 +937,7 @@ credit() {
 show_menu() {
     credit
     echo ''
-    echo "$(ui_text '1. Create an Admin account and automatically bypass MDM' '1. Tạo tài khoản quyền Admin và bypass MDM tự động')"
+    echo "$(ui_text '1. Create an Admin account and automatically bypass MDM (Recovery)' '1. Tạo tài khoản quyền Admin và bypass MDM tự động (Recovery)')"
     echo ''
     echo "$(ui_text '2. Reapply MDM bypass and handle notifications' '2. Bypass lại và xử lý thông báo MDM')"
     echo ''
