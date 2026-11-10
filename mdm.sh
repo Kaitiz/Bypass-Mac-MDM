@@ -195,6 +195,33 @@ prepare_recovery_target() {
     }
 }
 
+# Register only backups created by this invocation of Recovery option 1.
+register_setup_backup() {
+    [ -n "${RECOVERY_BACKUP_MANIFEST:-}" ] || return 0
+    case "$1" in *$'\n'*|*$'\r'*) return 1;; esac
+    printf '%s\n' "$1" >> "$RECOVERY_BACKUP_MANIFEST"
+}
+
+cleanup_setup_backups() {
+    local path name failed=0
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ -d "$path" ] && [ ! -L "$path" ]; then
+            for name in admin.plist .cloudConfigHasActivationRecord .cloudConfigRecordFound .cloudConfigProfileInstalled .cloudConfigRecordNotFound; do
+                rm -f "$path/$name" || failed=1
+            done
+            rmdir "$path" || failed=1
+        else
+            rm -f "$path" || failed=1
+        fi
+    done < "$RECOVERY_BACKUP_MANIFEST"
+    if [ "$failed" -ne 0 ]; then
+        fail "$(ui_text 'Setup succeeded, but some temporary backups could not be removed.' 'Thiết lập thành công, nhưng chưa xóa được một số bản sao lưu tạm.')"
+        return 1
+    fi
+    printf "$(ui_text 'Temporary backups removed.\n\n' 'Đã xóa các bản sao lưu tạm.\n\n')"
+}
+
 # Snapshot the same four local markers used by the original script. This never
 # deletes the ConfigurationProfiles directory or account/user-data records.
 update_profile_settings() (
@@ -222,6 +249,7 @@ update_profile_settings() (
     marker_backup=$("${marker_privilege[@]}" mktemp -d "$marker_backup_root/kaitiz-mdm-markers.XXXXXX") || {
         fail "$(ui_text 'Cannot create marker backup in:' 'Không tạo được bản sao lưu marker tại:') $marker_backup_root"; exit 1;
     }
+    register_setup_backup "$marker_backup" || exit 1
     marker_cleanup() {
         local status=$? rollback_failed=0 name
         trap - EXIT INT TERM
@@ -272,6 +300,7 @@ write_blocked_hosts() {
     backup=$("$@" mktemp "${hosts}.backup.$(date +%Y%m%d-%H%M%S).XXXXXX") || {
         rm -f "$temporary"; fail "$(ui_text 'Cannot create hosts backup.' 'Không tạo được bản sao lưu hosts.')"; return 1;
     }
+    register_setup_backup "$backup" || { rm -f "$temporary"; return 1; }
     if ! run_checked "$(ui_text 'Backing up hosts' 'Sao lưu hosts')" "$@" cp -p "$hosts" "$backup"; then
         "$@" rm -f "$backup"
         rm -f "$temporary"; return 1
@@ -586,6 +615,7 @@ create_offline_admin() (
     }
     find_offline_admins || exit 1
     backup=$(mktemp -d "$DATA_VOLUME/private/var/db/kaitiz-mdm-backup.XXXXXX") || exit 1
+    register_setup_backup "$backup" || exit 1
     chmod 700 "$backup" || exit 1
     run_checked "$(ui_text 'Backing up admin group' 'Sao lưu nhóm admin')" cp -p "$DSLOCAL_PATH/groups/admin.plist" "$backup/admin.plist" || exit 1
     printf "$(ui_text 'Creating %s (UID %s). Group backup: %s\n\n' 'Đang tạo %s (UID %s). Bản sao lưu nhóm: %s\n\n')" "$name" "$uid" "$backup"
@@ -700,6 +730,7 @@ set_offline_user_language() (
     run_checked "$(ui_text 'Setting preferences file permissions' 'Đặt quyền file tùy chọn')" chmod 600 "$language_stage" || exit 1
     if [ -f "$language_preferences" ]; then
         language_backup=$(mktemp "$language_home/Library/Preferences/.GlobalPreferences.backup.XXXXXX") || exit 1
+        register_setup_backup "$language_backup" || exit 1
         run_checked "$(ui_text 'Backing up existing preferences' 'Sao lưu tùy chọn hiện có')" cp -p "$language_preferences" "$language_backup" || exit 1
         printf "$(ui_text 'Preferences backup: %s\n\n' 'Bản sao lưu tùy chọn: %s\n\n')" "$language_backup"
     fi
@@ -733,15 +764,21 @@ finish_recovery_setup() {
 }
 
 continue_recovery_setup() {
-    local full_name username
+    local full_name username RECOVERY_BACKUP_MANIFEST result
     prepare_recovery_target || return 1
     load_offline_users && find_offline_admins || return 1
     printf "$(ui_text 'Create a new offline admin account.\n\n' 'Tạo tài khoản admin ngoại tuyến mới.\n\n')"
     read_ui_input "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
     read_ui_input "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
     username_available "$username" || return 1
-    create_offline_admin "$username" "$full_name" || return 1
-    finish_recovery_setup "$username"
+    RECOVERY_BACKUP_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/mdm-setup-backups.XXXXXX") || return 1
+    result=0
+    create_offline_admin "$username" "$full_name" && finish_recovery_setup "$username" || result=$?
+    if [ "$result" -eq 0 ]; then
+        cleanup_setup_backups || result=$?
+    fi
+    rm -f "$RECOVERY_BACKUP_MANIFEST"
+    return "$result"
 }
 
 is_macos() {
