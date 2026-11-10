@@ -6,7 +6,7 @@
 # Recovery account creation on M1/macOS 26 still requires real-device validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.2
+SCRIPT_VERSION=2026.11.11.3
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -233,12 +233,92 @@ valid_username() {
 }
 
 plist_array_contains() {
-    local file=$1 key=$2 expected=$3 value i=0
+    local file=$1 key=$2 expected=$3 mode=${4:-exact} value i=0
+    MATCHED_ARRAY_VALUE=
     while value=$(plist_get "$file" ":$key:$i"); do
-        [ "$value" != "$expected" ] || return 0
+        if [ "$value" = "$expected" ] || { [ "$mode" = uuid ] && uuid_equal "$value" "$expected"; }; then
+            MATCHED_ARRAY_VALUE=$value
+            return 0
+        fi
         i=$((i + 1))
     done
     return 1
+}
+
+# Parse only the requested dscl group attribute, never account/password data.
+directory_attribute_contains() {
+    local attribute=$1 output=$2 expected=$3 mode=${4:-exact} value
+    local values=()
+    MATCHED_DIRECTORY_VALUE=
+    case "$output" in "$attribute:"*) output=${output#"$attribute:"};; *) return 1;; esac
+    while IFS=$' \t' read -r -a values; do
+        for value in "${values[@]}"; do
+            if [ "$value" = "$expected" ] ||
+               { [ "$mode" = uuid ] && uuid_equal "$value" "$expected"; }; then
+                MATCHED_DIRECTORY_VALUE=$value
+                return 0
+            fi
+        done
+    done <<< "$output"
+    return 1
+}
+
+uuid_equal() {
+    local left right
+    left=$(printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]') || return 1
+    right=$(printf '%s' "$2" | LC_ALL=C tr '[:lower:]' '[:upper:]') || return 1
+    [ "$left" = "$right" ]
+}
+
+verify_admin_group() {
+    local name=$1 guid=$2 strict=$3 diagnostics=${4:-} group attempt
+    local names uuids node_name node_uuid disk_name disk_uuid read_name read_uuid report
+    group="$DSLOCAL_PATH/groups/admin.plist"
+    for attempt in 1 2 3; do
+        names=$(offline_dscl -read /Groups/admin GroupMembership 2>&1); read_name=$?
+        uuids=$(offline_dscl -read /Groups/admin GroupMembers 2>&1); read_uuid=$?
+        node_name=no; node_uuid=no; disk_name=no; disk_uuid=no
+        if [ "$read_name" -eq 0 ] && directory_attribute_contains GroupMembership "$names" "$name"; then node_name=yes; fi
+        if [ "$read_uuid" -eq 0 ] && directory_attribute_contains GroupMembers "$uuids" "$guid" uuid; then node_uuid=yes; fi
+        if plist_array_contains "$group" users "$name"; then disk_name=yes; fi
+        if plist_array_contains "$group" groupmembers "$guid" uuid; then disk_uuid=yes; fi
+        if [ "$strict" -eq 1 ]; then
+            [ "$node_name:$node_uuid:$disk_name:$disk_uuid" != yes:yes:yes:yes ] || return 0
+        else
+            if { [ "$node_name" = yes ] && [ "$disk_name" = yes ]; } ||
+               { [ "$node_uuid" = yes ] && [ "$disk_uuid" = yes ]; }; then
+                return 0
+            fi
+        fi
+        # Give pending record updates a bounded opportunity to become visible.
+        # Do not flush or restart the machine's directory services.
+        [ "$attempt" -eq 3 ] || sleep 1
+    done
+    report=$(printf 'Admin group verification failed.\nUser: %s\nExpected UUID: %s\nGroup file: %s\nDirectory service: username=%s UUID=%s\nOn disk: username=%s UUID=%s\nGroupMembership read exit: %s\n%s\nGroupMembers read exit: %s\n%s\n' \
+        "$name" "$guid" "$group" "$node_name" "$node_uuid" "$disk_name" "$disk_uuid" "$read_name" "$names" "$read_uuid" "$uuids")
+    printf '%s\n' "$report" >&2
+    if [ -n "$diagnostics" ] && [ -d "$diagnostics" ] && [ ! -L "$diagnostics" ]; then
+        if (umask 077; printf '%s\n' "$report" > "$diagnostics/admin-verification.txt"); then
+            printf 'Diagnostics (no passwords/hashes): %s/admin-verification.txt\n' "$diagnostics" >&2
+        else
+            printf 'Could not save group diagnostics; review the output above.\n' >&2
+        fi
+    fi
+    return 1
+}
+
+remove_created_group_value() {
+    local attribute=$1 key=$2 expected=$3 mode=${4:-exact} output actual=
+    output=$(offline_dscl -read /Groups/admin "$attribute") || {
+        fail "Cannot inspect $attribute during rollback; inspect the saved group backup."; return 1;
+    }
+    if directory_attribute_contains "$attribute" "$output" "$expected" "$mode"; then
+        actual=$MATCHED_DIRECTORY_VALUE
+    elif plist_array_contains "$DSLOCAL_PATH/groups/admin.plist" "$key" "$expected" "$mode"; then
+        actual=$MATCHED_ARRAY_VALUE
+    fi
+    [ -n "$actual" ] || return 0
+    offline_dscl -delete /Groups/admin "$attribute" "$actual"
 }
 
 # Read every local user's UID and aliases. Fail closed on malformed records.
@@ -317,14 +397,14 @@ find_offline_admins() {
         [[ "${USER_NAMES[$i]}" != _* ]] || continue
         guid=$(plist_get "${USER_FILES[$i]}" :generateduid:0) || guid=
         if plist_array_contains "$group" users "${USER_NAMES[$i]}" ||
-           { [ -n "$guid" ] && plist_array_contains "$group" groupmembers "$guid"; }; then
+           { [ -n "$guid" ] && plist_array_contains "$group" groupmembers "$guid" uuid; }; then
             ADMIN_NAMES[${#ADMIN_NAMES[@]}]=${USER_NAMES[$i]}
         fi
     done
 }
 
 verify_offline_admin() {
-    local name=$1 expected_uid=$2 expected_guid=$3 strict=${4:-0} record group home actual gid owner mode
+    local name=$1 expected_uid=$2 expected_guid=$3 strict=${4:-0} diagnostics=${5:-} record group home actual gid owner mode
     [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Unsupported account record name.'; return 1; }
     [[ "$expected_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$expected_uid))" -ge 501 ] &&
         [ "$((10#$expected_uid))" -le 60000 ] || { fail 'Not a normal local account UID.'; return 1; }
@@ -336,22 +416,14 @@ verify_offline_admin() {
     home="$DATA_VOLUME/Users/$name"
     [ -f "$record" ] && [ ! -L "$record" ] || { fail 'User record is missing or is a symlink.'; return 1; }
     actual=$(plist_get "$record" :uid:0) && [ "$actual" = "$expected_uid" ] || { fail 'UID verification failed.'; return 1; }
-    actual=$(plist_get "$record" :generateduid:0) && [ "$actual" = "$expected_guid" ] || { fail 'GeneratedUID verification failed.'; return 1; }
+    actual=$(plist_get "$record" :generateduid:0) && uuid_equal "$actual" "$expected_guid" || { fail 'GeneratedUID verification failed.'; return 1; }
     actual=$(plist_get "$record" :name:0) && [ "$actual" = "$name" ] || { fail 'Username verification failed.'; return 1; }
     actual=$(plist_get "$record" :home:0) && [ "$actual" = "/Users/$name" ] || { fail 'Home path verification failed.'; return 1; }
     gid=$(plist_get "$record" :gid:0) && [[ "$gid" =~ ^[0-9]{1,10}$ ]] || { fail 'Primary group verification failed.'; return 1; }
     [ "$strict" -ne 1 ] || [ "$gid" = 20 ] || { fail 'New account must use the staff primary group.'; return 1; }
     # Never print or export password hashes.
     plist_get "$record" :ShadowHashData:0 >/dev/null || { fail 'No local password hash was found.'; return 1; }
-    if [ "$strict" -eq 1 ]; then
-        plist_array_contains "$group" users "$name" && plist_array_contains "$group" groupmembers "$expected_guid" || {
-            fail 'Admin group verification failed.'; return 1;
-        }
-    else
-        plist_array_contains "$group" users "$name" || plist_array_contains "$group" groupmembers "$expected_guid" || {
-            fail 'Admin group verification failed.'; return 1;
-        }
-    fi
+    verify_admin_group "$name" "$expected_guid" "$strict" "$diagnostics" || return 1
     [ -d "$home" ] && [ ! -L "$home" ] || { fail 'Home folder is missing or is a symlink.'; return 1; }
     owner=$(stat -f '%u:%g' "$home") || return 1
     [ "$owner" = "$expected_uid:$gid" ] || { fail "Unexpected home ownership: $owner"; return 1; }
@@ -379,12 +451,8 @@ create_offline_admin() (
         trap - EXIT INT TERM
         if [ "$committed" -eq 0 ]; then
             if [ "$group_started" -eq 1 ]; then
-                if plist_array_contains "$group" users "$name"; then
-                    offline_dscl -delete /Groups/admin GroupMembership "$name" || failed=1
-                fi
-                if plist_array_contains "$group" groupmembers "$guid"; then
-                    offline_dscl -delete /Groups/admin GroupMembers "$guid" || failed=1
-                fi
+                remove_created_group_value GroupMembership users "$name" || failed=1
+                remove_created_group_value GroupMembers groupmembers "$guid" uuid || failed=1
             fi
             if [ "$record_started" -eq 1 ] && [ -e "$record" ]; then
                 offline_dscl -delete "/Users/$name" || failed=1
@@ -442,7 +510,7 @@ create_offline_admin() (
     group_started=1
     run_checked 'Adding admin membership' offline_dscl -merge /Groups/admin GroupMembership "$name" || exit 1
     run_checked 'Adding admin UUID' offline_dscl -merge /Groups/admin GroupMembers "$guid" || exit 1
-    verify_offline_admin "$name" "$uid" "$guid" 1 || exit 1
+    verify_offline_admin "$name" "$uid" "$guid" 1 "$backup" || exit 1
     committed=1
     printf 'Offline admin created: %s (%s).\n' "$full_name" "$name"
     printf 'Login, Secure Token and volume ownership have NOT been verified.\n'
