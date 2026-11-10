@@ -7,7 +7,7 @@
 # and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.8
+SCRIPT_VERSION=2026.11.11.9
 
 
 # This is script text only. Never export LANG/LC_* or write macOS preferences
@@ -17,21 +17,33 @@ ui_text() {
     if [ "$UI_LANGUAGE" = vi ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
 }
 
+# Used only by interactive screens, never by the command-line report options.
+# Clear scrollback as well as the visible screen; do not depend on TERM or -t.
 clear_screen() {
-    if [ -t 1 ]; then printf '\033[2J\033[H'; fi
+    printf '\033[3J\033[2J\033[H'
+}
+
+read_menu_choice() {
+    printf '\n%s\n> ' "$1"
+    read -r "$2"
 }
 
 select_ui_language() {
-    local choice
-    clear_screen
-    printf '\nPlease select the script interface language:\n1. English\n2. Vietnamese\n'
-    printf 'This changes script text only, not the macOS language.\n'
+    local choice message=
     while true; do
-        read -r -p 'Select language [1]: ' choice || return 1
+        clear_screen
+        printf '=============================================\n'
+        printf '             MDM Tools by Kaitiz\n'
+        printf '=============================================\n\n'
+        printf 'Please select the script interface language:\n\n'
+        printf '  1. English\n\n  2. Vietnamese\n\n'
+        printf 'This changes script text only, not the macOS language.\n'
+        if [ -n "$message" ]; then printf '\n%s\n' "$message"; fi
+        read_menu_choice 'Select language [1]:' choice || return 1
         case "$choice" in
             1|'') UI_LANGUAGE=en; return 0;;
             2) UI_LANGUAGE=vi; return 0;;
-            *) printf 'Invalid selection. Please enter 1 or 2.\n';;
+            *) message='Invalid selection. Please enter 1 or 2.';;
         esac
     done
 }
@@ -944,7 +956,7 @@ main() {
     while true; do
         clear_screen
         show_menu
-        read -r -p "$(ui_text 'Select an option: ' 'Chọn chức năng: ')" choice || break
+        read_menu_choice "$(ui_text 'Select an option:' 'Chọn chức năng:')" choice || break
         [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n' 'Đã thoát.\n')"; break; }
         clear_screen
         credit
