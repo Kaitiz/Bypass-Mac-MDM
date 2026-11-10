@@ -6,7 +6,7 @@
 # Recovery account creation on M1/macOS 26 still requires real-device validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.4
+SCRIPT_VERSION=2026.11.11.5
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -447,19 +447,32 @@ create_offline_admin() (
     lock="$DATA_VOLUME/private/var/db/.kaitiz-mdm-account.lock"
     mkdir "$lock" || { fail "Another operation may be active. Inspect lock: $lock"; exit 1; }
     rollback_account() {
-        local status=$? failed=0 group="$DSLOCAL_PATH/groups/admin.plist"
+        local status=$? failed=0 user_removed=0 group="$DSLOCAL_PATH/groups/admin.plist"
         trap - EXIT INT TERM
         if [ "$committed" -eq 0 ]; then
             if [ "$group_started" -eq 1 ]; then
                 remove_created_group_value GroupMembership users "$name" || failed=1
                 remove_created_group_value GroupMembers groupmembers "$guid" uuid || failed=1
             fi
-            if [ "$record_started" -eq 1 ] && [ -e "$record" ]; then
-                offline_dscl -delete "/Users/$name" || failed=1
+            if [ "$record_started" -eq 1 ]; then
+                if [ -e "$record" ] || [ -L "$record" ]; then
+                    if offline_dscl -delete "/Users/$name"; then
+                        if [ ! -e "$record" ] && [ ! -L "$record" ]; then user_removed=1; else failed=1; fi
+                    else
+                        failed=1
+                    fi
+                else
+                    user_removed=1
+                fi
             fi
             if [ "$home_created" -eq 1 ]; then
-                # Never recursively delete a home folder: it may now contain data.
-                rmdir "$home" || failed=1
+                if [ "$user_removed" -eq 1 ]; then
+                    # Never recursively delete a home folder: it may now contain data.
+                    rmdir "$home" || failed=1
+                else
+                    printf 'Preserving home: user record deletion failed or was not confirmed: %s\n' "$home" >&2
+                    failed=1
+                fi
             fi
             if [ "$failed" -ne 0 ]; then
                 printf 'Rollback incomplete. Inspect account %s, home %s and backup %s before retrying.\n' "$name" "$home" "$backup" >&2
@@ -761,6 +774,7 @@ diagnose_user_auto() {
         home="/Users/$username"
     fi
     report=$(
+        {
         printf 'MDM DIAGNOSTICS — version %s\nEnvironment: %s\nUsername: %s\n' "$SCRIPT_VERSION" "$environment" "$username"
         if [ "$environment" = recovery ]; then
             printf 'Selected Data volume: %s\n' "$DATA_VOLUME"
@@ -783,7 +797,8 @@ diagnose_user_auto() {
         ls -ld "$home"
         printf 'Home query exit: %s\n' "$?"
         printf '\nEND DIAGNOSTICS — không sửa tài khoản/nhóm/home; không đọc mật khẩu hoặc password hash.\n'
-    2>&1)
+        } 2>&1
+    )
     printf '\n%s\n' "$report"
     logfile=$(mktemp "${TMPDIR:-/tmp}/mdm-diagnostic.XXXXXX") || {
         fail 'Không tạo được file báo cáo tạm; kết quả vẫn có ở trên.'; return 1;
@@ -802,6 +817,83 @@ diagnose_account_prompt() {
     username=${username:-$default_username}
     diagnose_user_auto "$username" || return 1
     read -r -p 'Nhấn Enter để quay lại menu...' answer || :
+}
+
+# Repair only an already-existing ordinary account. Never recreate the record,
+# reset its password, change its UID/UUID or delete its home on failure.
+repair_offline_account() (
+    repair_name=$1 repair_uid= repair_guid= repair_gid= repair_home= repair_record= repair_backup= repair_lock=
+    [[ "$repair_name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Username không hợp lệ.'; exit 1; }
+    validate_offline_layout || exit 1
+    repair_record="$DSLOCAL_PATH/users/$repair_name.plist"
+    [ -f "$repair_record" ] && [ ! -L "$repair_record" ] || { fail 'Không có bản ghi tài khoản hợp lệ để khôi phục.'; exit 1; }
+    repair_uid=$(plist_get "$repair_record" :uid:0) &&
+        [[ "$repair_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$repair_uid))" -ge 501 ] && [ "$((10#$repair_uid))" -le 60000 ] || {
+        fail 'Không khôi phục tài khoản hệ thống hoặc UID ngoài phạm vi hỗ trợ.'; exit 1;
+    }
+    repair_guid=$(plist_get "$repair_record" :generateduid:0) &&
+        [[ "$repair_guid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
+        fail 'GeneratedUID không hợp lệ; không thay đổi tài khoản.'; exit 1;
+    }
+    [ "$(plist_get "$repair_record" :name:0)" = "$repair_name" ] &&
+        [ "$(plist_get "$repair_record" :home:0)" = "/Users/$repair_name" ] || {
+        fail 'Tên tài khoản hoặc đường dẫn home không khớp; không tự sửa bản ghi.'; exit 1;
+    }
+    repair_gid=$(plist_get "$repair_record" :gid:0) && [ "$repair_gid" = 20 ] || {
+        fail 'Tài khoản không có nhóm chính staff (20) như tài khoản do script tạo.'; exit 1;
+    }
+    plist_get "$repair_record" :ShadowHashData:0 >/dev/null || { fail 'Không có password hash hiện tại; cần kiểm tra riêng, không tự đặt lại mật khẩu.'; exit 1; }
+    repair_home="$DATA_VOLUME/Users/$repair_name"
+    if [ -e "$repair_home" ] || [ -L "$repair_home" ]; then
+        [ -d "$repair_home" ] && [ ! -L "$repair_home" ] &&
+            [ "$(stat -f '%u:%g' "$repair_home")" = "$repair_uid:$repair_gid" ] || {
+            fail 'Home đang tồn tại nhưng có kiểu/chủ sở hữu khác dự kiến; không ghi đè.'; exit 1;
+        }
+    fi
+    repair_lock="$DATA_VOLUME/private/var/db/.kaitiz-mdm-account.lock"
+    mkdir "$repair_lock" || { fail "Một tác vụ có thể đang chạy. Kiểm tra: $repair_lock"; exit 1; }
+    trap 'rmdir "$repair_lock"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    load_offline_users && find_offline_admins || exit 1
+    repair_backup=$(mktemp -d "$DATA_VOLUME/private/var/db/kaitiz-mdm-backup.XXXXXX") || exit 1
+    chmod 700 "$repair_backup" || exit 1
+    run_checked 'Backing up admin group before repair' cp -p "$DSLOCAL_PATH/groups/admin.plist" "$repair_backup/admin.plist" || exit 1
+    printf 'Khôi phục %s (UID %s). Group backup: %s\n' "$repair_name" "$repair_uid" "$repair_backup"
+    printf 'Giữ nguyên bản ghi, mật khẩu, UID và UUID. Nếu lỗi sẽ không xóa tài khoản/home.\n'
+    if [ ! -d "$repair_home" ]; then
+        run_checked 'Restoring missing empty home' mkdir -m 700 "$repair_home" || exit 1
+        run_checked 'Setting restored home ownership' chown "$repair_uid:$repair_gid" "$repair_home" || exit 1
+        run_checked 'Setting restored home permissions' chmod 700 "$repair_home" || exit 1
+    fi
+    if ! run_checked 'Restoring admin name membership' offline_dscl -merge /Groups/admin GroupMembership "$repair_name"; then
+        verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || :
+        exit 1
+    fi
+    if ! run_checked 'Restoring admin UUID membership' offline_dscl -merge /Groups/admin GroupMembers "$repair_guid"; then
+        verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || :
+        exit 1
+    fi
+    verify_admin_group "$repair_name" "$repair_guid" 1 "$repair_backup" || exit 1
+    verify_offline_admin "$repair_name" "$repair_uid" "$repair_guid" 0 "$repair_backup" || exit 1
+    printf 'Đã xác minh lại quyền admin và home của %s trên ổ đích.\n' "$repair_name"
+    printf 'Chưa xác minh đăng nhập/Secure Token; chưa đánh dấu Apple Setup Done. Chọn mục 6 để lấy báo cáo mới.\n'
+)
+
+repair_account_prompt() {
+    local username answer default_username=${LAST_ATTEMPT_USERNAME:-kaitiz}
+    detect_environment || return 1
+    [ "$CURRENT_ENV" = recovery ] || { fail 'Khôi phục tài khoản ngoại tuyến cần chạy trong Recovery.'; return 1; }
+    prepare_recovery_target || return 1
+    read -r -p "Tài khoản cần khôi phục [${default_username}]: " username || return 1
+    username=${username:-$default_username}
+    printf 'Volume: %s\nTài khoản: %s\nSẽ tạo lại home rỗng nếu thiếu và thêm quyền admin; không đặt lại mật khẩu.\n' "$DATA_VOLUME" "$username"
+    read -r -p 'Khôi phục tài khoản này? (y/N): ' answer || return 1
+    case "$answer" in y|Y|yes|YES) ;; *) printf 'Đã hủy; chưa thay đổi dữ liệu.\n'; return 0;; esac
+    repair_offline_account "$username"
+    local result=$?
+    read -r -p 'Nhấn Enter để quay lại menu...' answer || :
+    return "$result"
 }
 
 credit() {
@@ -828,6 +920,7 @@ show_menu() {
     echo '4. Xem file hosts'
     echo '5. Quản lý tài khoản root'
     echo '6. Chẩn đoán tài khoản / lỗi rollback (chỉ đọc)'
+    echo '7. Khôi phục tài khoản còn sót sau rollback'
     echo '0. Thoát'
     echo ''
 }
@@ -854,6 +947,7 @@ handle_choice() {
         4) show_hosts_auto;;
         5) handle_root_menu;;
         6) diagnose_account_prompt;;
+        7) repair_account_prompt;;
         *) fail 'Lựa chọn không hợp lệ.';;
     esac
 }
