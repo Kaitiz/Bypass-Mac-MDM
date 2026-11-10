@@ -7,7 +7,7 @@
 # and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.7
+SCRIPT_VERSION=2026.11.11.8
 
 
 # This is script text only. Never export LANG/LC_* or write macOS preferences
@@ -17,8 +17,13 @@ ui_text() {
     if [ "$UI_LANGUAGE" = vi ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
 }
 
+clear_screen() {
+    if [ -t 1 ]; then printf '\033[2J\033[H'; fi
+}
+
 select_ui_language() {
     local choice
+    clear_screen
     printf '\nPlease select the script interface language:\n1. English\n2. Vietnamese\n'
     printf 'This changes script text only, not the macOS language.\n'
     while true; do
@@ -860,6 +865,7 @@ create_admin_auto() {
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
+    echo ''
     printf "$(ui_text 'Version: %s\n' 'Phiên bản: %s\n')" "$SCRIPT_VERSION"
     echo '============================================='
     if detect_environment; then
@@ -876,8 +882,11 @@ show_menu() {
     credit
     echo ''
     echo "$(ui_text '1. Create an Admin account and automatically bypass MDM' '1. Tạo tài khoản quyền Admin và bypass MDM tự động')"
+    echo ''
     echo "$(ui_text '2. Reapply MDM bypass and handle notifications' '2. Bypass lại và xử lý thông báo MDM')"
+    echo ''
     echo "$(ui_text '3. Check MDM status and hosts file' '3. Kiểm tra trạng thái MDM và file hosts')"
+    echo ''
     echo "$(ui_text '0. Exit' '0. Thoát')"
     echo ''
 }
@@ -933,10 +942,16 @@ main() {
     esac
     select_ui_language || return 0
     while true; do
+        clear_screen
         show_menu
         read -r -p "$(ui_text 'Select an option: ' 'Chọn chức năng: ')" choice || break
         [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n' 'Đã thoát.\n')"; break; }
+        clear_screen
+        credit
+        printf '\n'
         handle_choice "$choice"
+        printf '\n\n'
+        read -r -p "$(ui_text 'Press Enter to return to the menu...' 'Nhấn Enter để quay lại menu...')" menu_return || break
     done
 }
 
