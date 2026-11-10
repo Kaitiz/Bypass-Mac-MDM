@@ -6,6 +6,7 @@
 # Recovery account creation on M1/macOS 26 still requires real-device validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
+SCRIPT_VERSION=2026.11.11.2
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -17,9 +18,35 @@ run_checked() {
 
 plist_get() { /usr/libexec/PlistBuddy -c "Print $2" "$1" 2>/dev/null; }
 
+system_directory_exists() { [ -d "$1" ]; }
+
+boot_volume_name() {
+    local info name status
+    info=$(mktemp "${TMPDIR:-/tmp}/mdm-boot.XXXXXX") || return 1
+    if ! diskutil info -plist / > "$info" 2>/dev/null; then
+        rm -f "$info"
+        return 1
+    fi
+    name=$(plist_get "$info" :VolumeName)
+    status=$?
+    rm -f "$info"
+    [ "$status" -eq 0 ] || return 1
+    printf '%s\n' "$name"
+}
+
 is_recovery() {
-    [ -d /System/Installation/CDIS ] &&
-        [ ! -d /System/Volumes/Data/private/var/db/dslocal/nodes/Default ]
+    local volume
+    # A mounted target Data volume does NOT mean Recovery has become macOS.
+    # Prefer positive Recovery components, then check the booted Base System.
+    if system_directory_exists /System/Installation/CDIS ||
+       system_directory_exists '/System/Library/CoreServices/Recovery Assistant.app'; then
+        return 0
+    fi
+    volume=$(boot_volume_name) || return 1
+    case "$volume" in
+        'macOS Base System'|'OS X Base System'|'Mac OS X Base System'|'Base System') return 0;;
+        *) return 1;;
+    esac
 }
 
 # Select only mounted APFS Data volumes; never rename, mount or unlock disks.
@@ -486,8 +513,9 @@ continue_recovery_setup() {
 }
 
 is_macos() {
-    [ "$(uname -s)" = Darwin ] && [ -d /System/Library/CoreServices ] &&
-        [ -d /System/Volumes/Data ]
+    [ "$(uname -s)" = Darwin ] &&
+        system_directory_exists /System/Library/CoreServices/Finder.app &&
+        system_directory_exists /System/Volumes/Data
 }
 
 detect_environment() {
@@ -500,6 +528,15 @@ detect_environment() {
         fail 'Không xác định được môi trường macOS/Recovery; chưa thực hiện tác vụ.'
         return 1
     fi
+}
+
+find_sysadminctl() {
+    SYSADMINCTL=
+    [ -x /usr/sbin/sysadminctl ] || {
+        fail 'Không có /usr/sbin/sysadminctl. Nếu đang ở Recovery, script phải nhận diện là Recovery; chưa tạo tài khoản hay sửa dữ liệu.'
+        return 1
+    }
+    SYSADMINCTL=/usr/sbin/sysadminctl
 }
 
 as_admin() {
@@ -597,6 +634,7 @@ disable_root_auto() {
 continue_live_setup() {
     local full_name username names name folded home uid groups
     # Creating a live admin does not require disabling SIP.
+    find_sysadminctl || return 1
     printf 'macOS: tạo admin bằng sysadminctl trên hệ điều hành đang chạy.\n'
     read -r -p 'Full name (Unicode allowed): ' full_name || return 1
     read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
@@ -609,7 +647,7 @@ continue_live_setup() {
     done <<< "$names"
     home="/Users/$username"
     [ ! -e "$home" ] && [ ! -L "$home" ] || { fail 'Home folder đã tồn tại; không ghi đè.'; return 1; }
-    run_checked 'Creating live admin account' as_admin sysadminctl interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
+    run_checked 'Creating live admin account' as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
         printf 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n' >&2
         return 1;
     }
@@ -639,6 +677,7 @@ create_admin_auto() {
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
+    printf 'Phiên bản: %s\n' "$SCRIPT_VERSION"
     echo '============================================='
     if detect_environment; then
         case "$CURRENT_ENV" in
@@ -692,11 +731,12 @@ check_live_user() {
     detect_environment || return 1
     [ "$CURRENT_ENV" = macos ] || { fail 'Run --check-user after booting into the installed macOS.'; return 1; }
     [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Invalid account name.'; return 1; }
+    find_sysadminctl || return 1
     printf 'Read-only diagnostics for the currently booted macOS: %s\n' "$name"
     run_checked 'Reading user identity' id "$name" || return 1
     run_checked 'Reading user UUID' dscl . -read "/Users/$name" GeneratedUID || return 1
     run_checked 'Reading admin membership' dsmemberutil checkmembership -U "$name" -G admin || return 1
-    run_checked 'Reading Secure Token status' sysadminctl -secureTokenStatus "$name" || return 1
+    run_checked 'Reading Secure Token status' "$SYSADMINCTL" -secureTokenStatus "$name" || return 1
     printf 'Match the GeneratedUID above with a Volume Owner entry below:\n'
     run_checked 'Reading APFS users' diskutil apfs listUsers / || return 1
     printf 'These reports do not test password login or FileVault unlock. Review their contents; exit status alone is insufficient.\n'
@@ -704,6 +744,10 @@ check_live_user() {
 
 main() {
     case "${1:-}" in
+        --environment)
+            detect_environment || return 1
+            printf 'Phiên bản: %s\nMôi trường: %s\n' "$SCRIPT_VERSION" "$CURRENT_ENV"
+            return 0;;
         --detect)
             # Read-only discovery: no changes to the selected installation.
             select_macos_data
@@ -713,8 +757,9 @@ main() {
             check_live_user "$2"
             return $?;;
         --help|-h)
-            printf 'Usage: bash mdm1.sh [--detect | --check-user USER | --help]\n'
+            printf 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n'
             printf 'Unlock/mount the macOS Data volume in Disk Utility first.\n'
+            printf '%s\n' '--environment reports the detected environment without changing the installation.'
             printf '%s\n' '--detect only lists/selects a mounted macOS Data volume.'
             printf '%s\n' '--check-user USER prints account/token/APFS reports in the installed macOS.'
             return 0;;
