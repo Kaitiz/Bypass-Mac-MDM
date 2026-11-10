@@ -7,14 +7,36 @@
 # and other device/OS configurations still require separate validation.
 # Compatible with the Bash 3.2 shipped with macOS and Recovery.
 set -o pipefail
-SCRIPT_VERSION=2026.11.11.6
+SCRIPT_VERSION=2026.11.11.7
 
-fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+
+# This is script text only. Never export LANG/LC_* or write macOS preferences
+# when choosing the interface language. Raw output from Apple tools is unmodified.
+UI_LANGUAGE=en
+ui_text() {
+    if [ "$UI_LANGUAGE" = vi ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+
+select_ui_language() {
+    local choice
+    printf '\nPlease select the script interface language:\n1. English\n2. Vietnamese\n'
+    printf 'This changes script text only, not the macOS language.\n'
+    while true; do
+        read -r -p 'Select language [1]: ' choice || return 1
+        case "$choice" in
+            1|'') UI_LANGUAGE=en; return 0;;
+            2) UI_LANGUAGE=vi; return 0;;
+            *) printf 'Invalid selection. Please enter 1 or 2.\n';;
+        esac
+    done
+}
+
+fail() { printf "$(ui_text 'ERROR: %s\n' 'LỖI: %s\n')" "$*" >&2; return 1; }
 
 run_checked() {
     local description=$1
     shift
-    "$@" || { fail "$description failed. No further steps will run for this action."; return 1; }
+    "$@" || { fail "$(ui_text "$description failed. No further steps will run for this action." "Thao tác $description thất bại. Dừng các bước còn lại của tác vụ này.")"; return 1; }
 }
 
 plist_get() { /usr/libexec/PlistBuddy -c "Print $2" "$1" 2>/dev/null; }
@@ -56,17 +78,17 @@ select_macos_data() {
     DATA_VOLUME= HOSTS_FILE= DSLOCAL_PATH= PROFILE_SETTINGS=
     local inventory info c v r device role mountpoint canonical answer index
     local candidates=() devices=()
-    command -v diskutil >/dev/null 2>&1 || { fail 'diskutil is unavailable.'; return 1; }
-    [ -x /usr/libexec/PlistBuddy ] || { fail 'PlistBuddy is unavailable.'; return 1; }
+    command -v diskutil >/dev/null 2>&1 || { fail "$(ui_text 'diskutil is unavailable.' 'Không tìm thấy diskutil.')"; return 1; }
+    [ -x /usr/libexec/PlistBuddy ] || { fail "$(ui_text 'PlistBuddy is unavailable.' 'Không tìm thấy PlistBuddy.')"; return 1; }
     inventory=$(mktemp "${TMPDIR:-/tmp}/mdm-disks.XXXXXX") || return 1
     info=$(mktemp "${TMPDIR:-/tmp}/mdm-info.XXXXXX") || { rm -f "$inventory"; return 1; }
     if ! diskutil apfs list -plist > "$inventory"; then
         rm -f "$inventory" "$info"
-        fail 'Cannot list APFS volumes. Check Disk Utility and try again.'; return 1
+        fail "$(ui_text 'Cannot list APFS volumes. Check Disk Utility and try again.' 'Không liệt kê được volume APFS. Kiểm tra Disk Utility rồi thử lại.')"; return 1
     fi
     if ! plist_get "$inventory" :Containers >/dev/null; then
         rm -f "$inventory" "$info"
-        fail 'Unexpected diskutil output: missing Containers array.'; return 1
+        fail "$(ui_text 'Unexpected diskutil output: missing Containers array.' 'Dữ liệu diskutil không đúng định dạng: thiếu mảng Containers.')"; return 1
     fi
     c=0
     while plist_get "$inventory" ":Containers:$c" >/dev/null; do
@@ -81,7 +103,7 @@ select_macos_data() {
                 device=$(plist_get "$inventory" ":Containers:$c:Volumes:$v:DeviceIdentifier") || device=
                 if [ -z "$device" ] || ! diskutil info -plist "$device" > "$info"; then
                     rm -f "$inventory" "$info"
-                    fail 'Cannot inspect a Data volume; discovery stopped.'; return 1
+                    fail "$(ui_text 'Cannot inspect a Data volume; discovery stopped.' 'Không đọc được thông tin volume Data; dừng nhận diện.')"; return 1
                 fi
                 mountpoint=$(plist_get "$info" :MountPoint) || mountpoint=
                 if [ -n "$mountpoint" ] && [ -d "$mountpoint" ]; then
@@ -93,7 +115,7 @@ select_macos_data() {
                         devices[${#devices[@]}]=$device
                     fi
                 else
-                    printf 'Skipping unmounted/locked Data volume: %s. Unlock/mount it in Disk Utility.\n' "$device" >&2
+                    printf "$(ui_text 'Skipping unmounted/locked Data volume: %s. Unlock/mount it in Disk Utility.\n' 'Bỏ qua Data chưa mount/đang khóa: %s. Mở khóa/mount bằng Disk Utility.\n')" "$device" >&2
                 fi
             fi
             v=$((v + 1))
@@ -102,125 +124,149 @@ select_macos_data() {
     done
     rm -f "$inventory" "$info"
     [ "${#candidates[@]}" -gt 0 ] || {
-        fail 'No mounted macOS Data volume found. Unlock/mount the installation in Disk Utility first.'; return 1;
+        fail "$(ui_text 'No mounted macOS Data volume found. Unlock/mount the installation in Disk Utility first.' 'Không tìm thấy Data của macOS đã mount. Mở khóa/mount bằng Disk Utility trước.')"; return 1;
     }
     index=0
     if [ "${#candidates[@]}" -gt 1 ]; then
-        printf 'Multiple macOS installations found:\n'
+        printf "$(ui_text 'Multiple macOS installations found:\n' 'Tìm thấy nhiều bản macOS:\n')"
         for ((index=0; index<${#candidates[@]}; index++)); do
             printf '%d. %s (%s)\n' "$((index + 1))" "${candidates[$index]}" "${devices[$index]}"
         done
-        read -r -p 'Select installation number (Enter to cancel): ' answer || return 1
-        case "$answer" in ''|*[!0-9]*) fail 'Selection cancelled or invalid.'; return 1;; esac
+        read -r -p "$(ui_text 'Select installation number (Enter to cancel): ' 'Chọn số thứ tự bản macOS (Enter để hủy): ')" answer || return 1
+        case "$answer" in ''|*[!0-9]*) fail "$(ui_text 'Selection cancelled or invalid.' 'Đã hủy hoặc lựa chọn không hợp lệ.')"; return 1;; esac
         # Compare strings to avoid evaluating untrusted input as shell arithmetic.
         index=0
         while [ "$index" -lt "${#candidates[@]}" ] && [ "$answer" != "$((index + 1))" ]; do
             index=$((index + 1))
         done
-        [ "$index" -lt "${#candidates[@]}" ] || { fail 'Selection is out of range.'; return 1; }
+        [ "$index" -lt "${#candidates[@]}" ] || { fail "$(ui_text 'Selection is out of range.' 'Lựa chọn nằm ngoài danh sách.')"; return 1; }
     fi
     DATA_VOLUME=${candidates[$index]}
     HOSTS_FILE="$DATA_VOLUME/private/etc/hosts"
     DSLOCAL_PATH="$DATA_VOLUME/private/var/db/dslocal/nodes/Default"
     PROFILE_SETTINGS="$DATA_VOLUME/private/var/db/ConfigurationProfiles/Settings"
-    printf 'Selected macOS Data: %s (%s)\n' "$DATA_VOLUME" "${devices[$index]}"
+    printf "$(ui_text 'Selected macOS Data: %s (%s)\n' 'Đã chọn Data macOS: %s (%s)\n')" "$DATA_VOLUME" "${devices[$index]}"
 }
 
 validate_offline_layout() {
     local directory resolved
     [ -n "$DATA_VOLUME" ] && [ "$DATA_VOLUME" != / ] &&
         [ "$DSLOCAL_PATH" = "$DATA_VOLUME/private/var/db/dslocal/nodes/Default" ] || {
-        fail 'Invalid offline target paths.'; return 1;
+        fail "$(ui_text 'Invalid offline target paths.' 'Đường dẫn ổ đích ngoại tuyến không hợp lệ.')"; return 1;
     }
     for directory in "$DATA_VOLUME/private/var/db" "$DSLOCAL_PATH" "$DSLOCAL_PATH/users" "$DSLOCAL_PATH/groups" "$DATA_VOLUME/Users"; do
-        resolved=$(cd "$directory" 2>/dev/null && pwd -P) || { fail "Missing directory: $directory"; return 1; }
-        [ "$resolved" = "$directory" ] || { fail "Refusing redirected directory: $directory"; return 1; }
+        resolved=$(cd "$directory" 2>/dev/null && pwd -P) || { fail "$(ui_text "Missing directory: $directory" "Thiếu thư mục: $directory")"; return 1; }
+        [ "$resolved" = "$directory" ] || { fail "$(ui_text "Refusing redirected directory: $directory" "Từ chối thư mục bị chuyển hướng: $directory")"; return 1; }
     done
 }
 
 prepare_recovery_target() {
-    [ "$EUID" -eq 0 ] || { fail 'Run this action as root in macOS Recovery.'; return 1; }
-    is_recovery || { fail 'This action requires macOS Recovery.'; return 1; }
+    [ "$EUID" -eq 0 ] || { fail "$(ui_text 'Run this action as root in macOS Recovery.' 'Chạy tác vụ này với quyền root trong macOS Recovery.')"; return 1; }
+    is_recovery || { fail "$(ui_text 'This action requires macOS Recovery.' 'Tác vụ này cần macOS Recovery.')"; return 1; }
     select_macos_data || return 1
     validate_offline_layout || return 1
     [ -w "$DATA_VOLUME/private/var/db" ] && [ -w "$HOSTS_FILE" ] && [ -w "$DSLOCAL_PATH" ] || {
-        fail 'Selected Data volume is not writable. Check mount/lock status.'; return 1;
+        fail "$(ui_text 'Selected Data volume is not writable. Check mount/lock status.' 'Data đã chọn không ghi được. Kiểm tra trạng thái mount/khóa.')"; return 1;
     }
 }
 
-update_profile_settings() {
-    local prefix=$1
+# Snapshot the same four local markers used by the original script. This never
+# deletes the ConfigurationProfiles directory or account/user-data records.
+update_profile_settings() (
+    marker_prefix=$1
     shift
-    local settings="$prefix/private/var/db/ConfigurationProfiles/Settings" marker
-    "$@" test -d "$settings" && ! "$@" test -L "$settings" || { fail "Missing or redirected profile settings directory: $settings"; return 1; }
-    for marker in .cloudConfigHasActivationRecord .cloudConfigRecordFound .cloudConfigProfileInstalled .cloudConfigRecordNotFound; do
-        ! "$@" test -L "$settings/$marker" && { ! "$@" test -e "$settings/$marker" || "$@" test -f "$settings/$marker"; } || {
-            fail "Unexpected profile marker type: $settings/$marker"; return 1;
+    marker_privilege=("$@")
+    marker_settings="$marker_prefix/private/var/db/ConfigurationProfiles/Settings"
+    marker_backup= marker_modified=0 marker_committed=0
+    marker_files=(.cloudConfigHasActivationRecord .cloudConfigRecordFound .cloudConfigProfileInstalled .cloudConfigRecordNotFound)
+    "${marker_privilege[@]}" test -d "$marker_settings" && ! "${marker_privilege[@]}" test -L "$marker_settings" || {
+        fail "$(ui_text 'Missing or redirected profile settings directory:' 'Thư mục profile thiếu hoặc bị chuyển hướng:') $marker_settings"; exit 1;
+    }
+    for marker_name in "${marker_files[@]}"; do
+        ! "${marker_privilege[@]}" test -L "$marker_settings/$marker_name" &&
+            { ! "${marker_privilege[@]}" test -e "$marker_settings/$marker_name" || "${marker_privilege[@]}" test -f "$marker_settings/$marker_name"; } || {
+            fail "$(ui_text 'Unexpected profile marker type:' 'Marker profile có kiểu không hợp lệ:') $marker_settings/$marker_name"; exit 1;
         }
     done
-    # -f handles absent marker files; unlike -rf it will not delete directories.
-    run_checked 'Removing activation marker' "$@" rm -f "$settings/.cloudConfigHasActivationRecord" || return 1
-    run_checked 'Removing enrollment marker' "$@" rm -f "$settings/.cloudConfigRecordFound" || return 1
-    run_checked 'Updating profile markers' "$@" touch "$settings/.cloudConfigProfileInstalled" "$settings/.cloudConfigRecordNotFound"
-}
+    marker_backup=$("${marker_privilege[@]}" mktemp -d "$marker_settings/.kaitiz-marker-backup.XXXXXX") || exit 1
+    marker_cleanup() {
+        local status=$? rollback_failed=0 name
+        trap - EXIT INT TERM
+        if [ "$marker_modified" -eq 1 ] && [ "$marker_committed" -eq 0 ]; then
+            for name in "${marker_files[@]}"; do
+                if "${marker_privilege[@]}" test -f "$marker_backup/$name"; then
+                    "${marker_privilege[@]}" cp -p "$marker_backup/$name" "$marker_settings/$name" || rollback_failed=1
+                else
+                    "${marker_privilege[@]}" rm -f "$marker_settings/$name" || rollback_failed=1
+                fi
+            done
+            if [ "$rollback_failed" -ne 0 ]; then
+                printf "$(ui_text 'Profile marker rollback incomplete. Backup: %s\n' 'Hoàn tác marker chưa đầy đủ. Bản sao lưu: %s\n')" "$marker_backup" >&2
+                status=1
+            fi
+        fi
+        exit "$status"
+    }
+    trap marker_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    for marker_name in "${marker_files[@]}"; do
+        if "${marker_privilege[@]}" test -f "$marker_settings/$marker_name"; then
+            run_checked "$(ui_text 'Backing up profile marker' 'Sao lưu marker profile')" "${marker_privilege[@]}" cp -p "$marker_settings/$marker_name" "$marker_backup/$marker_name" || exit 1
+        fi
+    done
+    printf "$(ui_text 'Profile marker backup: %s\n' 'Bản sao lưu marker profile: %s\n')" "$marker_backup"
+    marker_modified=1
+    run_checked "$(ui_text 'Removing activation marker' 'Xóa marker kích hoạt')" "${marker_privilege[@]}" rm -f "$marker_settings/.cloudConfigHasActivationRecord" || exit 1
+    run_checked "$(ui_text 'Removing enrollment marker' 'Xóa marker đăng ký quản lý')" "${marker_privilege[@]}" rm -f "$marker_settings/.cloudConfigRecordFound" || exit 1
+    run_checked "$(ui_text 'Updating profile markers' 'Cập nhật marker profile')" "${marker_privilege[@]}" touch "$marker_settings/.cloudConfigProfileInstalled" "$marker_settings/.cloudConfigRecordNotFound" || exit 1
+    marker_committed=1
+)
 
 # Replace hosts via one checked write, keeping a backup before modification.
 write_blocked_hosts() {
     local hosts=$1
     shift
     local temporary backup
-    [ -f "$hosts" ] && [ ! -L "$hosts" ] || { fail "Missing or symbolic-link hosts file: $hosts"; return 1; }
+    [ -f "$hosts" ] && [ ! -L "$hosts" ] || { fail "$(ui_text "Missing or symbolic-link hosts file: $hosts" "Hosts bị thiếu hoặc là symlink: $hosts")"; return 1; }
     temporary=$(mktemp "${TMPDIR:-/tmp}/mdm-hosts.XXXXXX") || return 1
     if ! sed -E '/^# MDM Servers$/d; /^# End$/d; /(^|[[:space:]])(deviceenrollment\.apple\.com|mdmenrollment\.apple\.com|iprofiles\.apple\.com|acmdm\.apple\.com|axm-adm-mdm\.apple\.com)([[:space:]]|$)/d' "$hosts" > "$temporary"; then
-        rm -f "$temporary"; fail 'Cannot read hosts file.'; return 1
+        rm -f "$temporary"; fail "$(ui_text 'Cannot read hosts file.' 'Không đọc được hosts.')"; return 1
     fi
     if ! printf '# MDM Servers\n0.0.0.0 deviceenrollment.apple.com\n0.0.0.0 mdmenrollment.apple.com\n0.0.0.0 iprofiles.apple.com\n0.0.0.0 acmdm.apple.com\n0.0.0.0 axm-adm-mdm.apple.com\n# End\n' >> "$temporary"; then
-        rm -f "$temporary"; fail 'Cannot prepare hosts update.'; return 1
+        rm -f "$temporary"; fail "$(ui_text 'Cannot prepare hosts update.' 'Không chuẩn bị được nội dung hosts.')"; return 1
     fi
     backup=$("$@" mktemp "${hosts}.backup.$(date +%Y%m%d-%H%M%S).XXXXXX") || {
-        rm -f "$temporary"; fail 'Cannot create hosts backup.'; return 1;
+        rm -f "$temporary"; fail "$(ui_text 'Cannot create hosts backup.' 'Không tạo được bản sao lưu hosts.')"; return 1;
     }
-    if ! run_checked 'Backing up hosts' "$@" cp -p "$hosts" "$backup"; then
+    if ! run_checked "$(ui_text 'Backing up hosts' 'Sao lưu hosts')" "$@" cp -p "$hosts" "$backup"; then
         "$@" rm -f "$backup"
         rm -f "$temporary"; return 1
     fi
-    if ! run_checked 'Writing hosts' "$@" tee "$hosts" < "$temporary" > /dev/null; then
-        run_checked 'Restoring hosts after write failure' "$@" cp -p "$backup" "$hosts" || {
-            printf 'Restore hosts manually from: %s\n' "$backup" >&2;
+    if ! run_checked "$(ui_text 'Writing hosts' 'Ghi hosts')" "$@" tee "$hosts" < "$temporary" > /dev/null; then
+        run_checked "$(ui_text 'Restoring hosts after write failure' 'Khôi phục hosts sau lỗi ghi')" "$@" cp -p "$backup" "$hosts" || {
+            printf "$(ui_text 'Restore hosts manually from: %s\n' 'Khôi phục hosts thủ công từ: %s\n')" "$backup" >&2;
         }
         rm -f "$temporary"; return 1
     fi
     rm -f "$temporary"
-    printf 'Hosts updated. Backup: %s\n' "$backup"
+    printf "$(ui_text 'Hosts updated. Backup: %s\n' 'Đã cập nhật hosts. Bản sao lưu: %s\n')" "$backup"
 }
 
-ask_block_hosts() {
-    local mode=${1:-live} answer hosts
-    while true; do
-        read -r -p 'Do you want to block hosts? (Y/N): ' answer || return 1
-        case "$answer" in
-            [Yy]|[Yy][Ee][Ss])
-                if [ "$mode" = recovery ]; then
-                    [ -n "$DATA_VOLUME" ] || { fail 'No target selected.'; return 1; }
-                    write_blocked_hosts "$HOSTS_FILE"
-                else
-                    write_blocked_hosts /private/etc/hosts sudo
-                fi
-                return $?;;
-            [Nn]|[Nn][Oo]) echo 'Skipping host blocking.'; return 0;;
-            *) echo 'Please enter Y or N.';;
-        esac
-    done
+apply_hosts_for_context() {
+    if [ "$1" = recovery ]; then
+        [ -n "$DATA_VOLUME" ] || { fail "$(ui_text 'No target selected.' 'Chưa chọn ổ đích.')"; return 1; }
+        write_blocked_hosts "$HOSTS_FILE"
+    else
+        write_blocked_hosts /private/etc/hosts as_admin
+    fi
 }
-
-ask_block_hosts_recovery() { ask_block_hosts recovery; }
-
 
 # -f with localonly exposes the external database as /Local/Target.
 # Do not use the live /Local/Default node when editing an offline installation.
 offline_dscl() {
     [ -n "$DSLOCAL_PATH" ] && [ -d "$DSLOCAL_PATH" ] || {
-        fail 'No offline directory database selected.'; return 1;
+        fail "$(ui_text 'No offline directory database selected.' 'Chưa chọn cơ sở dữ liệu tài khoản ngoại tuyến.')"; return 1;
     }
     local operation=$1 record=$2
     shift 2
@@ -300,9 +346,9 @@ verify_admin_group() {
     printf '%s\n' "$report" >&2
     if [ -n "$diagnostics" ] && [ -d "$diagnostics" ] && [ ! -L "$diagnostics" ]; then
         if (umask 077; printf '%s\n' "$report" > "$diagnostics/admin-verification.txt"); then
-            printf 'Diagnostics (no passwords/hashes): %s/admin-verification.txt\n' "$diagnostics" >&2
+            printf "$(ui_text 'Diagnostics (no passwords/hashes): %s/admin-verification.txt\n' 'Chẩn đoán (không có mật khẩu/hash): %s/admin-verification.txt\n')" "$diagnostics" >&2
         else
-            printf 'Could not save group diagnostics; review the output above.\n' >&2
+            printf "$(ui_text 'Could not save group diagnostics; review the output above.\n' 'Không lưu được chẩn đoán nhóm; xem kết quả ở trên.\n')" >&2
         fi
     fi
     return 1
@@ -311,7 +357,7 @@ verify_admin_group() {
 remove_created_group_value() {
     local attribute=$1 key=$2 expected=$3 mode=${4:-exact} output actual=
     output=$(offline_dscl -read /Groups/admin "$attribute") || {
-        fail "Cannot inspect $attribute during rollback; inspect the saved group backup."; return 1;
+        fail "$(ui_text "Cannot inspect $attribute during rollback; inspect the saved group backup." "Không đọc được $attribute khi hoàn tác; kiểm tra bản sao lưu nhóm.")"; return 1;
     }
     if directory_attribute_contains "$attribute" "$output" "$expected" "$mode"; then
         actual=$MATCHED_DIRECTORY_VALUE
@@ -327,19 +373,19 @@ remove_created_group_value() {
 load_offline_users() {
     local file uid name alias folded i count=0
     USER_FILES=(); USER_IDS=(); USER_NAMES=(); USER_ALIASES=()
-    [ -d "$DSLOCAL_PATH/users" ] || { fail 'Missing local users directory.'; return 1; }
+    [ -d "$DSLOCAL_PATH/users" ] || { fail "$(ui_text 'Missing local users directory.' 'Thiếu thư mục tài khoản cục bộ.')"; return 1; }
     for file in "$DSLOCAL_PATH/users/"*.plist; do
         [ -e "$file" ] || continue
-        [ -f "$file" ] && [ ! -L "$file" ] || { fail "Invalid user record: $file"; return 1; }
-        uid=$(plist_get "$file" :uid:0) || { fail "Unreadable UID: $file"; return 1; }
+        [ -f "$file" ] && [ ! -L "$file" ] || { fail "$(ui_text "Invalid user record: $file" "Bản ghi user không hợp lệ: $file")"; return 1; }
+        uid=$(plist_get "$file" :uid:0) || { fail "$(ui_text "Unreadable UID: $file" "Không đọc được UID: $file")"; return 1; }
         case "$uid" in
             -1|-2) ;;
             *) [[ "$uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$uid))" -le 4294967295 ] || {
-                fail "Invalid UID in $file"; return 1;
+                fail "$(ui_text "Invalid UID in $file" "UID không hợp lệ trong $file")"; return 1;
             };;
         esac
-        name=$(plist_get "$file" :name:0) || { fail "Missing account name: $file"; return 1; }
-        [ -n "$name" ] || { fail "Empty account name: $file"; return 1; }
+        name=$(plist_get "$file" :name:0) || { fail "$(ui_text "Missing account name: $file" "Thiếu tên tài khoản: $file")"; return 1; }
+        [ -n "$name" ] || { fail "$(ui_text "Empty account name: $file" "Tên tài khoản trống: $file")"; return 1; }
         USER_FILES[$count]=$file
         case "$uid" in
             -1|-2) USER_IDS[$count]=$uid;;
@@ -354,20 +400,20 @@ load_offline_users() {
         done
         count=$((count + 1))
     done
-    [ "$count" -gt 0 ] || { fail 'No user records found; refusing to modify an incomplete database.'; return 1; }
+    [ "$count" -gt 0 ] || { fail "$(ui_text 'No user records found; refusing to modify an incomplete database.' 'Không có bản ghi user; từ chối sửa cơ sở dữ liệu không đầy đủ.')"; return 1; }
 }
 
 username_available() {
     local name=$1 alias
-    valid_username "$name" || { fail 'Username must be 1-31 lowercase ASCII letters/digits/_/-, start with a letter, and not be reserved.'; return 1; }
+    valid_username "$name" || { fail "$(ui_text 'Username must be 1-31 lowercase ASCII letters/digits/_/-, start with a letter, and not be reserved.' 'Username dài 1–31 ký tự ASCII thường/số/_/-, bắt đầu bằng chữ và không dùng tên dành riêng.')"; return 1; }
     for alias in "${USER_ALIASES[@]}"; do
-        [ "$alias" != "$name" ] || { fail "Account name or alias already exists: $name"; return 1; }
+        [ "$alias" != "$name" ] || { fail "$(ui_text "Account name or alias already exists: $name" "Tên hoặc bí danh tài khoản đã tồn tại: $name")"; return 1; }
     done
     [ ! -e "$DSLOCAL_PATH/users/$name.plist" ] && [ ! -L "$DSLOCAL_PATH/users/$name.plist" ] || {
-        fail 'A user record already exists at the destination.'; return 1;
+        fail "$(ui_text 'A user record already exists at the destination.' 'Ổ đích đã có bản ghi tài khoản này.')"; return 1;
     }
     [ ! -e "$DATA_VOLUME/Users/$name" ] && [ ! -L "$DATA_VOLUME/Users/$name" ] || {
-        fail 'A home folder already exists; it will not be reused or overwritten.'; return 1;
+        fail "$(ui_text 'A home folder already exists; it will not be reused or overwritten.' 'Home đã tồn tại; không dùng lại hoặc ghi đè.')"; return 1;
     }
 }
 
@@ -384,15 +430,15 @@ allocate_uid() {
         fi
         candidate=$((candidate + 1))
     done
-    fail 'No unused UID between 501 and 60000.'
+    fail "$(ui_text 'No unused UID between 501 and 60000.' 'Không còn UID trống từ 501 đến 60000.')"
 }
 
 find_offline_admins() {
     local group="$DSLOCAL_PATH/groups/admin.plist" i guid
     ADMIN_NAMES=()
-    [ -f "$group" ] && [ ! -L "$group" ] || { fail 'Missing or symbolic-link admin group record.'; return 1; }
+    [ -f "$group" ] && [ ! -L "$group" ] || { fail "$(ui_text 'Missing or symbolic-link admin group record.' 'Bản ghi nhóm admin thiếu hoặc là symlink.')"; return 1; }
     guid=$(plist_get "$group" :gid:0) && [ "$guid" = 80 ] &&
-        plist_array_contains "$group" name admin || { fail 'Invalid admin group record.'; return 1; }
+        plist_array_contains "$group" name admin || { fail "$(ui_text 'Invalid admin group record.' 'Bản ghi nhóm admin không hợp lệ.')"; return 1; }
     for ((i=0; i<${#USER_NAMES[@]}; i++)); do
         [ "${USER_IDS[$i]}" -ge 501 ] && [ "${USER_IDS[$i]}" -le 60000 ] || continue
         [[ "${USER_NAMES[$i]}" != _* ]] || continue
@@ -406,31 +452,31 @@ find_offline_admins() {
 
 verify_offline_admin() {
     local name=$1 expected_uid=$2 expected_guid=$3 strict=${4:-0} diagnostics=${5:-} record group home actual gid owner mode
-    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Unsupported account record name.'; return 1; }
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail "$(ui_text 'Unsupported account record name.' 'Tên bản ghi tài khoản không được hỗ trợ.')"; return 1; }
     [[ "$expected_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$expected_uid))" -ge 501 ] &&
-        [ "$((10#$expected_uid))" -le 60000 ] || { fail 'Not a normal local account UID.'; return 1; }
+        [ "$((10#$expected_uid))" -le 60000 ] || { fail "$(ui_text 'Not a normal local account UID.' 'UID không thuộc tài khoản cục bộ thông thường.')"; return 1; }
     [[ "$expected_guid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
-        fail 'Invalid account GeneratedUID.'; return 1;
+        fail "$(ui_text 'Invalid account GeneratedUID.' 'GeneratedUID của tài khoản không hợp lệ.')"; return 1;
     }
     record="$DSLOCAL_PATH/users/$name.plist"
     group="$DSLOCAL_PATH/groups/admin.plist"
     home="$DATA_VOLUME/Users/$name"
-    [ -f "$record" ] && [ ! -L "$record" ] || { fail 'User record is missing or is a symlink.'; return 1; }
-    actual=$(plist_get "$record" :uid:0) && [ "$actual" = "$expected_uid" ] || { fail 'UID verification failed.'; return 1; }
-    actual=$(plist_get "$record" :generateduid:0) && uuid_equal "$actual" "$expected_guid" || { fail 'GeneratedUID verification failed.'; return 1; }
-    actual=$(plist_get "$record" :name:0) && [ "$actual" = "$name" ] || { fail 'Username verification failed.'; return 1; }
-    actual=$(plist_get "$record" :home:0) && [ "$actual" = "/Users/$name" ] || { fail 'Home path verification failed.'; return 1; }
-    gid=$(plist_get "$record" :gid:0) && [[ "$gid" =~ ^[0-9]{1,10}$ ]] || { fail 'Primary group verification failed.'; return 1; }
-    [ "$strict" -ne 1 ] || [ "$gid" = 20 ] || { fail 'New account must use the staff primary group.'; return 1; }
+    [ -f "$record" ] && [ ! -L "$record" ] || { fail "$(ui_text 'User record is missing or is a symlink.' 'Bản ghi user bị thiếu hoặc là symlink.')"; return 1; }
+    actual=$(plist_get "$record" :uid:0) && [ "$actual" = "$expected_uid" ] || { fail "$(ui_text 'UID verification failed.' 'Xác minh UID thất bại.')"; return 1; }
+    actual=$(plist_get "$record" :generateduid:0) && uuid_equal "$actual" "$expected_guid" || { fail "$(ui_text 'GeneratedUID verification failed.' 'Xác minh GeneratedUID thất bại.')"; return 1; }
+    actual=$(plist_get "$record" :name:0) && [ "$actual" = "$name" ] || { fail "$(ui_text 'Username verification failed.' 'Xác minh username thất bại.')"; return 1; }
+    actual=$(plist_get "$record" :home:0) && [ "$actual" = "/Users/$name" ] || { fail "$(ui_text 'Home path verification failed.' 'Xác minh đường dẫn home thất bại.')"; return 1; }
+    gid=$(plist_get "$record" :gid:0) && [[ "$gid" =~ ^[0-9]{1,10}$ ]] || { fail "$(ui_text 'Primary group verification failed.' 'Xác minh nhóm chính thất bại.')"; return 1; }
+    [ "$strict" -ne 1 ] || [ "$gid" = 20 ] || { fail "$(ui_text 'New account must use the staff primary group.' 'Tài khoản mới phải dùng staff làm nhóm chính.')"; return 1; }
     # Never print or export password hashes.
-    plist_get "$record" :ShadowHashData:0 >/dev/null || { fail 'No local password hash was found.'; return 1; }
+    plist_get "$record" :ShadowHashData:0 >/dev/null || { fail "$(ui_text 'No local password hash was found.' 'Không tìm thấy password hash cục bộ.')"; return 1; }
     verify_admin_group "$name" "$expected_guid" "$strict" "$diagnostics" || return 1
-    [ -d "$home" ] && [ ! -L "$home" ] || { fail 'Home folder is missing or is a symlink.'; return 1; }
+    [ -d "$home" ] && [ ! -L "$home" ] || { fail "$(ui_text 'Home folder is missing or is a symlink.' 'Home bị thiếu hoặc là symlink.')"; return 1; }
     owner=$(stat -f '%u:%g' "$home") || return 1
-    [ "$owner" = "$expected_uid:$gid" ] || { fail "Unexpected home ownership: $owner"; return 1; }
+    [ "$owner" = "$expected_uid:$gid" ] || { fail "$(ui_text "Unexpected home ownership: $owner" "Chủ sở hữu home khác dự kiến: $owner")"; return 1; }
     if [ "$strict" -eq 1 ]; then
         mode=$(stat -f '%Lp' "$home") || return 1
-        [ "$mode" = 700 ] || { fail 'New home permissions must be 700.'; return 1; }
+        [ "$mode" = 700 ] || { fail "$(ui_text 'New home permissions must be 700.' 'Quyền home mới phải là 700.')"; return 1; }
     fi
 }
 
@@ -442,11 +488,11 @@ create_offline_admin() (
     name=$1 full_name=$2 uid= guid= home= record= lock= backup= attribute= value=
     committed=0 record_started=0 home_created=0 group_started=0
     [ -n "$full_name" ] && [[ "$full_name" != *$'\n'* ]] && [[ "$full_name" != *$'\r'* ]] || {
-        fail 'Full name must be nonempty and occupy one line.'; exit 1;
+        fail "$(ui_text 'Full name must be nonempty and occupy one line.' 'Full name không được trống hoặc có nhiều dòng.')"; exit 1;
     }
     validate_offline_layout || exit 1
     lock="$DATA_VOLUME/private/var/db/.kaitiz-mdm-account.lock"
-    mkdir "$lock" || { fail "Another operation may be active. Inspect lock: $lock"; exit 1; }
+    mkdir "$lock" || { fail "$(ui_text "Another operation may be active. Inspect lock: $lock" "Có thể một tác vụ khác đang chạy. Kiểm tra khóa: $lock")"; exit 1; }
     rollback_account() {
         local status=$? failed=0 user_removed=0 group="$DSLOCAL_PATH/groups/admin.plist"
         trap - EXIT INT TERM
@@ -471,12 +517,12 @@ create_offline_admin() (
                     # Never recursively delete a home folder: it may now contain data.
                     rmdir "$home" || failed=1
                 else
-                    printf 'Preserving home: user record deletion failed or was not confirmed: %s\n' "$home" >&2
+                    printf "$(ui_text 'Preserving home: user record deletion failed or was not confirmed: %s\n' 'Giữ lại home vì chưa xác nhận xóa được bản ghi user: %s\n')" "$home" >&2
                     failed=1
                 fi
             fi
             if [ "$failed" -ne 0 ]; then
-                printf 'Rollback incomplete. Inspect account %s, home %s and backup %s before retrying.\n' "$name" "$home" "$backup" >&2
+                printf "$(ui_text 'Rollback incomplete. Inspect account %s, home %s and backup %s before retrying.\n' 'Hoàn tác chưa đầy đủ. Kiểm tra user %s, home %s và bản sao lưu %s trước khi thử lại.\n')" "$name" "$home" "$backup" >&2
                 status=1
             fi
         fi
@@ -489,19 +535,19 @@ create_offline_admin() (
     load_offline_users && username_available "$name" && allocate_uid || exit 1
     uid=$NEW_UID
     guid=$(uuidgen) || exit 1
-    [[ "$guid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || { fail 'uuidgen returned an invalid identifier.'; exit 1; }
+    [[ "$guid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || { fail "$(ui_text 'uuidgen returned an invalid identifier.' 'uuidgen trả về mã định danh không hợp lệ.')"; exit 1; }
     home="$DATA_VOLUME/Users/$name"
     record="$DSLOCAL_PATH/users/$name.plist"
     [ -d "$DATA_VOLUME/Users" ] && [ ! -L "$DATA_VOLUME/Users" ] && [ -w "$DATA_VOLUME/Users" ] || {
-        fail 'Missing, symbolic-link or unwritable Users directory.'; exit 1;
+        fail "$(ui_text 'Missing, symbolic-link or unwritable Users directory.' 'Thư mục Users thiếu, là symlink hoặc không ghi được.')"; exit 1;
     }
     find_offline_admins || exit 1
     backup=$(mktemp -d "$DATA_VOLUME/private/var/db/kaitiz-mdm-backup.XXXXXX") || exit 1
     chmod 700 "$backup" || exit 1
-    run_checked 'Backing up admin group' cp -p "$DSLOCAL_PATH/groups/admin.plist" "$backup/admin.plist" || exit 1
-    printf 'Creating %s (UID %s). Group backup: %s\n' "$name" "$uid" "$backup"
+    run_checked "$(ui_text 'Backing up admin group' 'Sao lưu nhóm admin')" cp -p "$DSLOCAL_PATH/groups/admin.plist" "$backup/admin.plist" || exit 1
+    printf "$(ui_text 'Creating %s (UID %s). Group backup: %s\n' 'Đang tạo %s (UID %s). Bản sao lưu nhóm: %s\n')" "$name" "$uid" "$backup"
     record_started=1
-    run_checked 'Creating user record' offline_dscl -create "/Users/$name" || exit 1
+    run_checked "$(ui_text 'Creating user record' 'Tạo bản ghi user')" offline_dscl -create "/Users/$name" || exit 1
     for attribute in UserShell RealName UniqueID PrimaryGroupID GeneratedUID NFSHomeDirectory; do
         case "$attribute" in
             UserShell) value=/bin/zsh;;
@@ -511,55 +557,37 @@ create_offline_admin() (
             GeneratedUID) value=$guid;;
             NFSHomeDirectory) value="/Users/$name";;
         esac
-        run_checked "Setting $attribute" offline_dscl -create "/Users/$name" "$attribute" "$value" || exit 1
+        run_checked "$(ui_text "Setting $attribute" "Đặt $attribute")" offline_dscl -create "/Users/$name" "$attribute" "$value" || exit 1
     done
-    printf 'Set the NEW account password at the dscl prompts. No default password is used.\n'
+    printf "$(ui_text 'Set the NEW account password at the dscl prompts. No default password is used.\n' 'Đặt mật khẩu tài khoản MỚI theo lời nhắc dscl. Không có mật khẩu mặc định.\n')"
     # Let dscl prompt securely; never put the password in argv or a shell variable.
-    run_checked 'Setting account password' offline_dscl -passwd "/Users/$name" || exit 1
-    plist_get "$record" :ShadowHashData:0 >/dev/null || { fail 'Password hash was not created.'; exit 1; }
-    run_checked 'Creating home folder' mkdir -m 700 "$home" || exit 1
+    run_checked "$(ui_text 'Setting account password' 'Đặt mật khẩu tài khoản')" offline_dscl -passwd "/Users/$name" || exit 1
+    plist_get "$record" :ShadowHashData:0 >/dev/null || { fail "$(ui_text 'Password hash was not created.' 'Chưa tạo được password hash.')"; exit 1; }
+    run_checked "$(ui_text 'Creating home folder' 'Tạo thư mục home')" mkdir -m 700 "$home" || exit 1
     home_created=1
-    run_checked 'Setting home ownership' chown "$uid:20" "$home" || exit 1
-    run_checked 'Setting home permissions' chmod 700 "$home" || exit 1
+    run_checked "$(ui_text 'Setting home ownership' 'Đặt chủ sở hữu home')" chown "$uid:20" "$home" || exit 1
+    run_checked "$(ui_text 'Setting home permissions' 'Đặt quyền home')" chmod 700 "$home" || exit 1
     group_started=1
-    run_checked 'Adding admin membership' offline_dscl -merge /Groups/admin GroupMembership "$name" || exit 1
-    run_checked 'Adding admin UUID' offline_dscl -merge /Groups/admin GroupMembers "$guid" || exit 1
+    run_checked "$(ui_text 'Adding admin membership' 'Thêm thành viên nhóm admin')" offline_dscl -merge /Groups/admin GroupMembership "$name" || exit 1
+    run_checked "$(ui_text 'Adding admin UUID' 'Thêm UUID vào nhóm admin')" offline_dscl -merge /Groups/admin GroupMembers "$guid" || exit 1
     verify_offline_admin "$name" "$uid" "$guid" 1 "$backup" || exit 1
     committed=1
-    printf 'Offline admin created: %s (%s).\n' "$full_name" "$name"
-    printf 'Login, Secure Token and volume ownership have NOT been verified.\n'
-    printf 'The empty home folder is owned by the new user; GUI template initialization is not reproduced.\n'
+    printf "$(ui_text 'Offline admin created: %s (%s).\n' 'Đã tạo admin ngoại tuyến: %s (%s).\n')" "$full_name" "$name"
+    printf "$(ui_text 'Login, Secure Token and volume ownership have NOT been verified.\n' 'Chưa xác minh đăng nhập, Secure Token và volume ownership.\n')"
+    printf "$(ui_text 'The empty home folder is owned by the new user; GUI template initialization is not reproduced.\n' 'Home rỗng thuộc user mới; chưa tái tạo đầy đủ bước khởi tạo của giao diện Apple.\n')"
 )
-
-choose_existing_admin() {
-    local i answer
-    WORKFLOW_USER=
-    [ "${#ADMIN_NAMES[@]}" -gt 0 ] || return 1
-    printf 'Existing local admin records (not proof of successful login):\n'
-    for ((i=0; i<${#ADMIN_NAMES[@]}; i++)); do
-        printf '%d. %s\n' "$((i + 1))" "${ADMIN_NAMES[$i]}"
-    done
-    read -r -p 'Select admin number (Enter cancels): ' answer || return 1
-    for ((i=0; i<${#ADMIN_NAMES[@]}; i++)); do
-        if [ "$answer" = "$((i + 1))" ]; then
-            WORKFLOW_USER=${ADMIN_NAMES[$i]}
-            return 0
-        fi
-    done
-    fail 'Selection cancelled or invalid.'
-}
 
 choose_setup_language() {
     local choice
     SETUP_LANGUAGE=keep
-    printf '\nNgôn ngữ khi đăng nhập macOS:\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n'
+    printf "$(ui_text '\nmacOS account language (separate from the script interface):\n1. English\n2. Vietnamese\n0. Keep current (Enter)\n' '\nNgôn ngữ tài khoản macOS (tách biệt với giao diện script):\n1. English\n2. Tiếng Việt\n0. Giữ nguyên (Enter)\n')"
     while true; do
-        read -r -p 'Chọn ngôn ngữ: ' choice || return 0
+        read -r -p "$(ui_text 'Select macOS account language: ' 'Chọn ngôn ngữ: ')" choice || return 0
         case "$choice" in
             1) SETUP_LANGUAGE=en; return 0;;
             2) SETUP_LANGUAGE=vi; return 0;;
             0|'') return 0;;
-            *) printf 'Lựa chọn không hợp lệ.\n';;
+            *) printf "$(ui_text 'Invalid selection.\n' 'Lựa chọn không hợp lệ.\n')";;
         esac
     done
 }
@@ -570,117 +598,107 @@ choose_setup_language() {
 set_offline_user_language() (
     language_user=$1 language_code=$2 language_stage= language_backup=
     [ "$language_code" != keep ] || exit 0
-    case "$language_code" in en|vi) ;; *) fail 'Ngôn ngữ không được hỗ trợ.'; exit 1;; esac
-    [[ "$language_user" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Username không hợp lệ.'; exit 1; }
+    case "$language_code" in en|vi) ;; *) fail "$(ui_text 'Unsupported language.' 'Ngôn ngữ không được hỗ trợ.')"; exit 1;; esac
+    [[ "$language_user" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail "$(ui_text 'Invalid username.' 'Username không hợp lệ.')"; exit 1; }
     validate_offline_layout || exit 1
     language_record="$DSLOCAL_PATH/users/$language_user.plist"
-    [ -f "$language_record" ] && [ ! -L "$language_record" ] || { fail 'Không có bản ghi user hợp lệ.'; exit 1; }
+    [ -f "$language_record" ] && [ ! -L "$language_record" ] || { fail "$(ui_text 'No valid user record found.' 'Không có bản ghi user hợp lệ.')"; exit 1; }
     language_uid=$(plist_get "$language_record" :uid:0) &&
         [[ "$language_uid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$language_uid))" -ge 501 ] && [ "$((10#$language_uid))" -le 60000 ] || exit 1
     language_gid=$(plist_get "$language_record" :gid:0) &&
         [[ "$language_gid" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$language_gid))" -le 4294967295 ] || exit 1
     [ "$(plist_get "$language_record" :name:0)" = "$language_user" ] &&
         [ "$(plist_get "$language_record" :home:0)" = "/Users/$language_user" ] || {
-        fail 'Bản ghi user không khớp đường dẫn home.'; exit 1;
+        fail "$(ui_text 'User record does not match the home path.' 'Bản ghi user không khớp đường dẫn home.')"; exit 1;
     }
     language_home="$DATA_VOLUME/Users/$language_user"
     [ -d "$language_home" ] && [ ! -L "$language_home" ] &&
         [ "$(cd "$language_home" && pwd -P)" = "$language_home" ] &&
         [ "$(stat -f '%u:%g' "$language_home")" = "$language_uid:$language_gid" ] || {
-        fail 'Home không hợp lệ hoặc có chủ sở hữu khác dự kiến.'; exit 1;
+        fail "$(ui_text 'Invalid home or unexpected home ownership.' 'Home không hợp lệ hoặc có chủ sở hữu khác dự kiến.')"; exit 1;
     }
     for language_directory in "$language_home/Library" "$language_home/Library/Preferences"; do
         if [ -L "$language_directory" ]; then
-            fail "Không ghi qua symlink: $language_directory"; exit 1
+            fail "$(ui_text "Refusing to write through symlink: $language_directory" "Không ghi qua symlink: $language_directory")"; exit 1
         elif [ -e "$language_directory" ]; then
-            [ -d "$language_directory" ] || { fail "Không phải thư mục: $language_directory"; exit 1; }
+            [ -d "$language_directory" ] || { fail "$(ui_text "Not a directory: $language_directory" "Không phải thư mục: $language_directory")"; exit 1; }
         else
-            run_checked 'Creating user preferences directory' mkdir -m 700 "$language_directory" || exit 1
-            run_checked 'Setting preferences directory ownership' chown "$language_uid:$language_gid" "$language_directory" || exit 1
+            run_checked "$(ui_text 'Creating user preferences directory' 'Tạo thư mục tùy chọn của user')" mkdir -m 700 "$language_directory" || exit 1
+            run_checked "$(ui_text 'Setting preferences directory ownership' 'Đặt chủ sở hữu thư mục tùy chọn')" chown "$language_uid:$language_gid" "$language_directory" || exit 1
         fi
     done
     language_preferences="$language_home/Library/Preferences/.GlobalPreferences.plist"
     [ ! -L "$language_preferences" ] &&
         { [ ! -e "$language_preferences" ] || [ -f "$language_preferences" ]; } || {
-        fail 'File tùy chọn ngôn ngữ có kiểu không hợp lệ.'; exit 1;
+        fail "$(ui_text 'Unexpected language preferences file type.' 'File tùy chọn ngôn ngữ có kiểu không hợp lệ.')"; exit 1;
     }
     language_stage=$(mktemp "$language_home/Library/Preferences/.kaitiz-language.XXXXXX") || exit 1
     trap 'if [ -n "$language_stage" ]; then rm -f "$language_stage"; fi' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     if [ -f "$language_preferences" ]; then
-        run_checked 'Copying existing preferences' cp -p "$language_preferences" "$language_stage" || exit 1
-        /usr/libexec/PlistBuddy -c Print "$language_stage" >/dev/null || { fail 'File preferences hiện có không phải plist hợp lệ.'; exit 1; }
+        run_checked "$(ui_text 'Copying existing preferences' 'Sao chép tùy chọn hiện có')" cp -p "$language_preferences" "$language_stage" || exit 1
+        /usr/libexec/PlistBuddy -c Print "$language_stage" >/dev/null || { fail "$(ui_text 'Existing preferences file is not a valid plist.' 'File preferences hiện có không phải plist hợp lệ.')"; exit 1; }
     else
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict/></plist>' > "$language_stage" || {
-            fail 'Không tạo được plist ngôn ngữ ban đầu.'; exit 1;
+            fail "$(ui_text 'Cannot initialize the language preferences plist.' 'Không tạo được plist ngôn ngữ ban đầu.')"; exit 1;
         }
     fi
     if plist_get "$language_stage" :AppleLanguages >/dev/null; then
-        run_checked 'Replacing language list' /usr/libexec/PlistBuddy -c 'Delete :AppleLanguages' "$language_stage" || exit 1
+        run_checked "$(ui_text 'Replacing language list' 'Thay danh sách ngôn ngữ')" /usr/libexec/PlistBuddy -c 'Delete :AppleLanguages' "$language_stage" || exit 1
     fi
-    run_checked 'Creating language list' /usr/libexec/PlistBuddy -c 'Add :AppleLanguages array' "$language_stage" || exit 1
-    run_checked 'Setting preferred language' /usr/libexec/PlistBuddy -c "Add :AppleLanguages:0 string $language_code" "$language_stage" || exit 1
+    run_checked "$(ui_text 'Creating language list' 'Tạo danh sách ngôn ngữ')" /usr/libexec/PlistBuddy -c 'Add :AppleLanguages array' "$language_stage" || exit 1
+    run_checked "$(ui_text 'Setting preferred language' 'Đặt ngôn ngữ ưu tiên')" /usr/libexec/PlistBuddy -c "Add :AppleLanguages:0 string $language_code" "$language_stage" || exit 1
     if [ "$language_code" = vi ]; then
-        run_checked 'Setting fallback language' /usr/libexec/PlistBuddy -c 'Add :AppleLanguages:1 string en' "$language_stage" || exit 1
+        run_checked "$(ui_text 'Setting fallback language' 'Đặt ngôn ngữ dự phòng')" /usr/libexec/PlistBuddy -c 'Add :AppleLanguages:1 string en' "$language_stage" || exit 1
     fi
-    [ "$(plist_get "$language_stage" :AppleLanguages:0)" = "$language_code" ] || { fail 'Xác minh ngôn ngữ thất bại.'; exit 1; }
-    run_checked 'Setting preferences file ownership' chown "$language_uid:$language_gid" "$language_stage" || exit 1
-    run_checked 'Setting preferences file permissions' chmod 600 "$language_stage" || exit 1
+    [ "$(plist_get "$language_stage" :AppleLanguages:0)" = "$language_code" ] || { fail "$(ui_text 'Language verification failed.' 'Xác minh ngôn ngữ thất bại.')"; exit 1; }
+    run_checked "$(ui_text 'Setting preferences file ownership' 'Đặt chủ sở hữu file tùy chọn')" chown "$language_uid:$language_gid" "$language_stage" || exit 1
+    run_checked "$(ui_text 'Setting preferences file permissions' 'Đặt quyền file tùy chọn')" chmod 600 "$language_stage" || exit 1
     if [ -f "$language_preferences" ]; then
         language_backup=$(mktemp "$language_home/Library/Preferences/.GlobalPreferences.backup.XXXXXX") || exit 1
-        run_checked 'Backing up existing preferences' cp -p "$language_preferences" "$language_backup" || exit 1
-        printf 'Preferences backup: %s\n' "$language_backup"
+        run_checked "$(ui_text 'Backing up existing preferences' 'Sao lưu tùy chọn hiện có')" cp -p "$language_preferences" "$language_backup" || exit 1
+        printf "$(ui_text 'Preferences backup: %s\n' 'Bản sao lưu tùy chọn: %s\n')" "$language_backup"
     fi
-    run_checked 'Saving target user language' mv -f "$language_stage" "$language_preferences" || exit 1
+    run_checked "$(ui_text 'Saving target user language' 'Lưu ngôn ngữ cho user đích')" mv -f "$language_stage" "$language_preferences" || exit 1
     language_stage=
-    printf 'Đã đặt ngôn ngữ cho %s: %s. Áp dụng khi đăng nhập macOS.\n' "$language_user" "$language_code"
+    printf "$(ui_text 'Language set for %s: %s. Applies at macOS login.\n' 'Đã đặt ngôn ngữ cho %s: %s. Áp dụng khi đăng nhập macOS.\n')" "$language_user" "$language_code"
 )
 
 finish_recovery_setup() {
-    local name=$1 answer uid guid record
-    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Unsupported account name.'; return 1; }
+    local name=$1 uid guid record
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail "$(ui_text 'Unsupported account name.' 'Tên tài khoản không được hỗ trợ.')"; return 1; }
     record="$DSLOCAL_PATH/users/$name.plist"
     uid=$(plist_get "$record" :uid:0) && guid=$(plist_get "$record" :generateduid:0) || {
-        fail 'Cannot read selected account.'; return 1;
+        fail "$(ui_text 'Cannot read selected account.' 'Không đọc được tài khoản đã chọn.')"; return 1;
     }
     verify_offline_admin "$name" "$uid" "$guid" || return 1
-    printf '\nFinishing marks Apple Setup Done so the next boot can reach the login screen.\n'
-    printf 'Offline checks do not verify login, Secure Token, FileVault unlock or volume ownership.\n'
-    printf 'Only continue if you intend to test this account at the next boot.\n'
-    read -r -p "Type FINISH $name to finish, or Enter to leave setup unchanged: " answer || return 1
-    [ "$answer" = "FINISH $name" ] || { printf 'Setup markers left unchanged.\n'; return 0; }
     [ -d "$PROFILE_SETTINGS" ] && [ -w "$PROFILE_SETTINGS" ] || {
-        fail "Missing or unwritable profile settings: $PROFILE_SETTINGS"; return 1;
+        fail "$(ui_text "Missing or unwritable profile settings: $PROFILE_SETTINGS" "Thiết lập profile thiếu hoặc không ghi được: $PROFILE_SETTINGS")"; return 1;
     }
     [ ! -L "$DATA_VOLUME/private/var/db/.AppleSetupDone" ] &&
         { [ ! -e "$DATA_VOLUME/private/var/db/.AppleSetupDone" ] || [ -f "$DATA_VOLUME/private/var/db/.AppleSetupDone" ]; } || {
-        fail 'Unexpected .AppleSetupDone file type.'; return 1;
+        fail "$(ui_text 'Unexpected .AppleSetupDone file type.' 'Kiểu file .AppleSetupDone không hợp lệ.')"; return 1;
     }
     # SetupDone is last: an earlier failure must not prematurely skip setup.
     update_profile_settings "$DATA_VOLUME" || return 1
-    ask_block_hosts_recovery || return 1
+    apply_hosts_for_context recovery || return 1
     choose_setup_language || return 1
     set_offline_user_language "$name" "$SETUP_LANGUAGE" || return 1
-    run_checked 'Updating setup marker' touch "$DATA_VOLUME/private/var/db/.AppleSetupDone" || return 1
-    printf 'Setup marked complete. Restart manually and test login before disabling any existing account.\n'
+    run_checked "$(ui_text 'Updating setup marker' 'Cập nhật marker hoàn tất thiết lập')" touch "$DATA_VOLUME/private/var/db/.AppleSetupDone" || return 1
+    printf "$(ui_text 'Setup marked complete. Restart manually and test login before disabling any existing account.\n' 'Đã đánh dấu hoàn tất. Khởi động lại thủ công và thử đăng nhập trước khi vô hiệu hóa tài khoản hiện có.\n')"
 }
 
 continue_recovery_setup() {
     local full_name username
     prepare_recovery_target || return 1
     load_offline_users && find_offline_admins || return 1
-    if [ "${#ADMIN_NAMES[@]}" -gt 0 ]; then
-        choose_existing_admin || return 1
-    else
-        printf 'No direct local admin record found. Create an offline admin.\n'
-        read -r -p 'Full name (Unicode allowed): ' full_name || return 1
-        read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
-        username_available "$username" || return 1
-        create_offline_admin "$username" "$full_name" || return 1
-        WORKFLOW_USER=$username
-    fi
-    finish_recovery_setup "$WORKFLOW_USER"
+    printf "$(ui_text 'Create a new offline admin account.\n' 'Tạo tài khoản admin ngoại tuyến mới.\n')"
+    read -r -p "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
+    read -r -p "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
+    username_available "$username" || return 1
+    create_offline_admin "$username" "$full_name" || return 1
+    finish_recovery_setup "$username"
 }
 
 is_macos() {
@@ -696,7 +714,7 @@ detect_environment() {
     elif is_macos; then
         CURRENT_ENV=macos
     else
-        fail 'Không xác định được môi trường macOS/Recovery; chưa thực hiện tác vụ.'
+        fail "$(ui_text 'Cannot identify macOS/Recovery; no action performed.' 'Không xác định được môi trường macOS/Recovery; chưa thực hiện tác vụ.')"
         return 1
     fi
 }
@@ -704,7 +722,7 @@ detect_environment() {
 find_sysadminctl() {
     SYSADMINCTL=
     [ -x /usr/sbin/sysadminctl ] || {
-        fail 'Không có /usr/sbin/sysadminctl. Nếu đang ở Recovery, script phải nhận diện là Recovery; chưa tạo tài khoản hay sửa dữ liệu.'
+        fail "$(ui_text 'Missing /usr/sbin/sysadminctl. Recovery must use the offline workflow; no account created or data changed.' 'Không có /usr/sbin/sysadminctl. Nếu đang ở Recovery, script phải nhận diện là Recovery; chưa tạo tài khoản hay sửa dữ liệu.')"
         return 1
     }
     SYSADMINCTL=/usr/sbin/sysadminctl
@@ -724,30 +742,30 @@ handle_notifications() {
     detect_environment || return 1
     case "$CURRENT_ENV" in
         recovery)
-            printf 'Môi trường: Recovery — thao tác trên volume macOS được chọn.\n'
+            printf "$(ui_text 'Environment: Recovery — working on the selected macOS volume.\n' 'Môi trường: Recovery — thao tác trên volume macOS được chọn.\n')"
             prepare_recovery_target || return 1
             update_profile_settings "$DATA_VOLUME" || return 1
-            ask_block_hosts_recovery || return 1
+            apply_hosts_for_context recovery || return 1
             ;;
         macos)
-            printf 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n'
+            printf "$(ui_text 'Environment: macOS — working on the running installation.\n' 'Môi trường: macOS — thao tác trên hệ điều hành đang chạy.\n')"
             update_profile_settings "" as_admin || {
-                fail 'Không sửa được marker; xem lỗi ở trên. Có thể thử lại mục này trong Recovery.'
+                fail "$(ui_text 'Cannot update markers; see the error above. You can retry this action in Recovery.' 'Không sửa được marker; xem lỗi ở trên. Có thể thử lại mục này trong Recovery.')"
                 return 1
             }
-            ask_block_hosts live || return 1
+            apply_hosts_for_context live || return 1
             ;;
     esac
-    printf 'Đã xử lý các marker cục bộ. Đây không phải xác nhận thiết bị đã được gỡ khỏi MDM.\n'
+    printf "$(ui_text 'Local markers updated. This does not confirm release from MDM.\n' 'Đã xử lý các marker cục bộ. Đây không phải xác nhận thiết bị đã được gỡ khỏi MDM.\n')"
 }
 
 show_hosts_auto() {
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
-        select_macos_data || return 1
-        run_checked 'Reading hosts on selected volume' cat "$HOSTS_FILE"
+        if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
+        run_checked "$(ui_text 'Reading hosts on selected volume' 'Đọc hosts trên ổ đã chọn')" cat "$HOSTS_FILE"
     else
-        run_checked 'Reading hosts on booted macOS' cat /private/etc/hosts
+        run_checked "$(ui_text 'Reading hosts on booted macOS' 'Đọc hosts của macOS đang chạy')" cat /private/etc/hosts
     fi
 }
 
@@ -755,48 +773,42 @@ check_enrollment_auto() {
     local settings marker
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
-        select_macos_data || return 1
+        if [ "${1:-}" != selected ]; then select_macos_data || return 1; fi
         settings="$DATA_VOLUME/private/var/db/ConfigurationProfiles/Settings"
         [ -d "$settings" ] && [ ! -L "$settings" ] && [ -r "$settings" ] && [ -x "$settings" ] || {
-            fail 'Không đọc được thư mục profile trên ổ đã chọn.'; return 1;
+            fail "$(ui_text 'Cannot read the profile directory on the selected volume.' 'Không đọc được thư mục profile trên ổ đã chọn.')"; return 1;
         }
-        printf 'Recovery: chỉ xem dấu vết cục bộ trên volume đã chọn.\n'
-        printf 'Không thể kết luận trạng thái enrollment đang hoạt động bằng các file này.\n'
+        printf "$(ui_text 'Recovery: showing local evidence on the selected volume only.\n' 'Recovery: chỉ xem dấu vết cục bộ trên volume đã chọn.\n')"
+        printf "$(ui_text 'These files cannot establish the active enrollment state.\n' 'Không thể kết luận trạng thái enrollment đang hoạt động bằng các file này.\n')"
         for marker in .cloudConfigHasActivationRecord .cloudConfigRecordFound .cloudConfigProfileInstalled .cloudConfigRecordNotFound; do
             if [ -L "$settings/$marker" ]; then
-                fail "Marker là liên kết tượng trưng: $marker"; return 1
+                fail "$(ui_text "Marker is a symbolic link: $marker" "Marker là liên kết tượng trưng: $marker")"; return 1
             elif [ -e "$settings/$marker" ]; then
-                printf 'Có: %s\n' "$marker"
+                printf "$(ui_text 'Present: %s\n' 'Có: %s\n')" "$marker"
             else
-                printf 'Không có: %s\n' "$marker"
+                printf "$(ui_text 'Absent: %s\n' 'Không có: %s\n')" "$marker"
             fi
         done
-        printf 'Để xem trạng thái thực tế, khởi động vào macOS rồi chọn lại mục này.\n'
+        printf "$(ui_text 'To query the actual status, boot into macOS and select this item again.\n' 'Để xem trạng thái thực tế, khởi động vào macOS rồi chọn lại mục này.\n')"
     else
-        run_checked 'Checking enrollment status' as_admin profiles status -type enrollment || return 1
-        run_checked 'Reading enrollment configuration' as_admin profiles show -type enrollment || return 1
-        printf 'Đã lấy báo cáo. Hãy đọc nội dung; lỗi lệnh không đồng nghĩa với đã gỡ MDM.\n'
+        run_checked "$(ui_text 'Checking enrollment status' 'Kiểm tra trạng thái đăng ký quản lý')" as_admin profiles status -type enrollment || return 1
+        run_checked "$(ui_text 'Reading enrollment configuration' 'Đọc cấu hình đăng ký quản lý')" as_admin profiles show -type enrollment || return 1
+        printf "$(ui_text 'Reports retrieved. Review their contents; command failure does not mean MDM was removed.\n' 'Đã lấy báo cáo. Hãy đọc nội dung; lỗi lệnh không đồng nghĩa với đã gỡ MDM.\n')"
     fi
 }
 
-set_root_password_auto() {
+inspect_mdm_and_hosts() {
+    local result=0 context=live
     detect_environment || return 1
     if [ "$CURRENT_ENV" = recovery ]; then
-        prepare_recovery_target || return 1
-        run_checked 'Setting offline root password' offline_dscl -passwd /Users/root || return 1
-    else
-        run_checked 'Setting live root password' as_admin dscl . -passwd /Users/root || return 1
+        select_macos_data || return 1
+        context=selected
     fi
-    printf 'Đã đặt mật khẩu root; đây không phải xác minh tài khoản admin thông thường.\n'
-}
-
-disable_root_auto() {
-    detect_environment || return 1
-    if [ "$CURRENT_ENV" = recovery ]; then
-        fail 'Vô hiệu hóa root cần chạy trong macOS. Hãy khởi động vào macOS rồi chọn lại mục này.'
-        return 1
-    fi
-    run_checked 'Disabling root user' as_admin dsenableroot -d
+    printf "$(ui_text '\nMDM status:\n' '\nTrạng thái MDM:\n')"
+    check_enrollment_auto "$context" || result=1
+    printf "$(ui_text '\nHosts file:\n' '\nFile hosts:\n')"
+    show_hosts_auto "$context" || result=1
+    return "$result"
 }
 
 # Live creation uses macOS account services, not offline plist modification.
@@ -806,34 +818,34 @@ continue_live_setup() {
     local full_name username names name folded home uid groups
     # Creating a live admin does not require disabling SIP.
     find_sysadminctl || return 1
-    printf 'macOS: tạo admin bằng sysadminctl trên hệ điều hành đang chạy.\n'
-    read -r -p 'Full name (Unicode allowed): ' full_name || return 1
-    read -r -p 'Username (lowercase ASCII, 1-31 characters): ' username || return 1
-    valid_username "$username" || { fail 'Username không hợp lệ.'; return 1; }
-    [ -n "$full_name" ] && [[ "$full_name" != *$'\r'* ]] || { fail 'Full name không hợp lệ.'; return 1; }
-    names=$(dscl . -list /Users) || { fail 'Không đọc được danh sách tài khoản.'; return 1; }
+    printf "$(ui_text 'macOS: creating an admin with sysadminctl on the running installation.\n' 'macOS: tạo admin bằng sysadminctl trên hệ điều hành đang chạy.\n')"
+    read -r -p "$(ui_text 'Full name (Unicode allowed): ' 'Tên hiển thị (cho phép tiếng Việt): ')" full_name || return 1
+    read -r -p "$(ui_text 'Username (lowercase ASCII, 1-31 characters): ' 'Username (ASCII thường, 1–31 ký tự): ')" username || return 1
+    valid_username "$username" || { fail "$(ui_text 'Invalid username.' 'Username không hợp lệ.')"; return 1; }
+    [ -n "$full_name" ] && [[ "$full_name" != *$'\r'* ]] || { fail "$(ui_text 'Invalid full name.' 'Full name không hợp lệ.')"; return 1; }
+    names=$(dscl . -list /Users) || { fail "$(ui_text 'Cannot read the account list.' 'Không đọc được danh sách tài khoản.')"; return 1; }
     while IFS= read -r name; do
         folded=$(printf '%s' "$name" | LC_ALL=C tr '[:upper:]' '[:lower:]') || return 1
-        [ "$folded" != "$username" ] || { fail 'Username đã tồn tại.'; return 1; }
+        [ "$folded" != "$username" ] || { fail "$(ui_text 'Username already exists.' 'Username đã tồn tại.')"; return 1; }
     done <<< "$names"
     home="/Users/$username"
-    [ ! -e "$home" ] && [ ! -L "$home" ] || { fail 'Home folder đã tồn tại; không ghi đè.'; return 1; }
-    run_checked 'Creating live admin account' as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
-        printf 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n' >&2
+    [ ! -e "$home" ] && [ ! -L "$home" ] || { fail "$(ui_text 'Home folder already exists; refusing to overwrite it.' 'Home folder đã tồn tại; không ghi đè.')"; return 1; }
+    run_checked "$(ui_text 'Creating live admin account' 'Tạo tài khoản admin trong macOS')" as_admin "$SYSADMINCTL" interactive -addUser "$username" -fullName "$full_name" -password - -admin || {
+        printf "$(ui_text 'If account creation made partial changes, inspect Users & Groups before retrying.\n' 'Nếu lệnh tạo tài khoản đã thay đổi một phần dữ liệu, hãy kiểm tra Users & Groups trước khi thử lại.\n')" >&2
         return 1;
     }
     uid=$(id -u "$username") && groups=$(id -Gn "$username") || {
-        fail "Không xác minh được tài khoản $username. Hãy kiểm tra Users & Groups."; return 1;
+        fail "$(ui_text "Cannot verify account $username. Inspect Users & Groups." "Không xác minh được tài khoản $username. Hãy kiểm tra Users & Groups.")"; return 1;
     }
     case " $groups " in
         *' admin '*) ;;
-        *) fail "Tài khoản $username chưa được xác minh là admin. Chưa xử lý marker."; return 1;;
+        *) fail "$(ui_text "Account $username is not verified as an admin. Markers have not been updated." "Tài khoản $username chưa được xác minh là admin. Chưa xử lý marker.")"; return 1;;
     esac
-    printf 'Đã tạo admin %s (UID %s). Secure Token và đăng nhập chưa được xác minh.\n' "$username" "$uid"
-    update_profile_settings "" as_admin && ask_block_hosts live || {
-        fail "Tài khoản $username vẫn tồn tại; bước xử lý thông báo chưa hoàn tất."; return 1;
+    printf "$(ui_text 'Admin %s created (UID %s). Secure Token and login have not been verified.\n' 'Đã tạo admin %s (UID %s). Secure Token và đăng nhập chưa được xác minh.\n')" "$username" "$uid"
+    update_profile_settings "" as_admin && apply_hosts_for_context live || {
+        fail "$(ui_text "Account $username still exists; notification handling did not complete." "Tài khoản $username vẫn tồn tại; bước xử lý thông báo chưa hoàn tất.")"; return 1;
     }
-    printf 'Đã hoàn thành luồng trong macOS; không sửa AppleSetupDone của hệ điều hành đang chạy.\n'
+    printf "$(ui_text 'macOS workflow completed; AppleSetupDone was not changed on the running installation.\n' 'Đã hoàn thành luồng trong macOS; không sửa AppleSetupDone của hệ điều hành đang chạy.\n')"
 }
 
 create_admin_auto() {
@@ -848,99 +860,82 @@ create_admin_auto() {
 credit() {
     echo '============================================='
     echo '             MDM Tools by Kaitiz'
-    printf 'Phiên bản: %s\n' "$SCRIPT_VERSION"
+    printf "$(ui_text 'Version: %s\n' 'Phiên bản: %s\n')" "$SCRIPT_VERSION"
     echo '============================================='
     if detect_environment; then
         case "$CURRENT_ENV" in
-            recovery) echo 'Môi trường: Recovery';;
-            macos) echo 'Môi trường: macOS';;
+            recovery) echo "$(ui_text 'Environment: Recovery' 'Môi trường: Recovery')";;
+            macos) echo "$(ui_text 'Environment: macOS' 'Môi trường: macOS')";;
         esac
     else
-        echo 'Môi trường: không xác định — các tác vụ sẽ bị từ chối.'
+        echo "$(ui_text 'Environment: unknown — actions will be refused.' 'Môi trường: không xác định — các tác vụ sẽ bị từ chối.')"
     fi
 }
 
 show_menu() {
     credit
     echo ''
-    echo '1. Tạo tài khoản mới với quyền Admin và bypass tự động'
-    echo '2. Xử lý thông báo MDM'
-    echo '3. Kiểm tra trạng thái MDM'
-    echo '4. Xem file hosts'
-    echo '5. Quản lý tài khoản root'
-    echo '0. Thoát'
+    echo "$(ui_text '1. Create an Admin account and automatically bypass MDM' '1. Tạo tài khoản quyền Admin và bypass MDM tự động')"
+    echo "$(ui_text '2. Reapply MDM bypass and handle notifications' '2. Bypass lại và xử lý thông báo MDM')"
+    echo "$(ui_text '3. Check MDM status and hosts file' '3. Kiểm tra trạng thái MDM và file hosts')"
+    echo "$(ui_text '0. Exit' '0. Thoát')"
     echo ''
-}
-
-handle_root_menu() {
-    local choice
-    while true; do
-        printf '\n1. Đặt mật khẩu root\n2. Vô hiệu hóa root\n0. Quay lại\n'
-        read -r -p 'Chọn chức năng: ' choice || return 0
-        case "$choice" in
-            1) set_root_password_auto;;
-            2) disable_root_auto;;
-            0) return 0;;
-            *) printf 'Lựa chọn không hợp lệ.\n';;
-        esac
-    done
 }
 
 handle_choice() {
     case "$1" in
         1) create_admin_auto;;
         2) handle_notifications;;
-        3) check_enrollment_auto;;
-        4) show_hosts_auto;;
-        5) handle_root_menu;;
-        *) fail 'Lựa chọn không hợp lệ.';;
+        3) inspect_mdm_and_hosts;;
+        *) fail "$(ui_text 'Invalid selection.' 'Lựa chọn không hợp lệ.')";;
     esac
 }
 
 check_live_user() {
     local name=$1
     detect_environment || return 1
-    [ "$CURRENT_ENV" = macos ] || { fail 'Run --check-user after booting into the installed macOS.'; return 1; }
-    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail 'Invalid account name.'; return 1; }
+    [ "$CURRENT_ENV" = macos ] || { fail "$(ui_text 'Run --check-user after booting into the installed macOS.' 'Chạy --check-user sau khi khởi động vào macOS đã cài.')"; return 1; }
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9._-]{0,254}$ ]] || { fail "$(ui_text 'Invalid account name.' 'Tên tài khoản không hợp lệ.')"; return 1; }
     find_sysadminctl || return 1
-    printf 'Read-only diagnostics for the currently booted macOS: %s\n' "$name"
-    run_checked 'Reading user identity' id "$name" || return 1
-    run_checked 'Reading user UUID' dscl . -read "/Users/$name" GeneratedUID || return 1
-    run_checked 'Reading admin membership' dsmemberutil checkmembership -U "$name" -G admin || return 1
-    run_checked 'Reading Secure Token status' "$SYSADMINCTL" -secureTokenStatus "$name" || return 1
-    printf 'Match the GeneratedUID above with a Volume Owner entry below:\n'
-    run_checked 'Reading APFS users' diskutil apfs listUsers / || return 1
-    printf 'These reports do not test password login or FileVault unlock. Review their contents; exit status alone is insufficient.\n'
+    printf "$(ui_text 'Read-only diagnostics for the currently booted macOS: %s\n' 'Báo cáo chỉ đọc trên macOS đang chạy: %s\n')" "$name"
+    run_checked "$(ui_text 'Reading user identity' 'Đọc danh tính user')" id "$name" || return 1
+    run_checked "$(ui_text 'Reading user UUID' 'Đọc UUID của user')" dscl . -read "/Users/$name" GeneratedUID || return 1
+    run_checked "$(ui_text 'Reading admin membership' 'Đọc thành viên nhóm admin')" dsmemberutil checkmembership -U "$name" -G admin || return 1
+    run_checked "$(ui_text 'Reading Secure Token status' 'Đọc trạng thái Secure Token')" "$SYSADMINCTL" -secureTokenStatus "$name" || return 1
+    printf "$(ui_text 'Match the GeneratedUID above with a Volume Owner entry below:\n' 'Đối chiếu GeneratedUID ở trên với Volume Owner ở dưới:\n')"
+    run_checked "$(ui_text 'Reading APFS users' 'Đọc danh sách user APFS')" diskutil apfs listUsers / || return 1
+    printf "$(ui_text 'These reports do not test password login or FileVault unlock. Review their contents; exit status alone is insufficient.\n' 'Báo cáo không thử mật khẩu đăng nhập hoặc mở khóa FileVault. Cần đọc nội dung thay vì chỉ dựa vào mã thoát.\n')"
 }
 
 main() {
     case "${1:-}" in
         --environment)
             detect_environment || return 1
-            printf 'Phiên bản: %s\nMôi trường: %s\n' "$SCRIPT_VERSION" "$CURRENT_ENV"
+            printf "$(ui_text 'Version: %s\nEnvironment: %s\n' 'Phiên bản: %s\nMôi trường: %s\n')" "$SCRIPT_VERSION" "$CURRENT_ENV"
             return 0;;
         --detect)
             # Read-only discovery: no changes to the selected installation.
             select_macos_data
             return $?;;
         --check-user)
-            [ "$#" -eq 2 ] || { fail 'Usage: bash mdm1.sh --check-user USER'; return 1; }
+            [ "$#" -eq 2 ] || { fail "$(ui_text 'Usage: bash mdm1.sh --check-user USER' 'Cách dùng: bash mdm1.sh --check-user USER')"; return 1; }
             check_live_user "$2"
             return $?;;
         --help|-h)
-            printf 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n'
-            printf 'Unlock/mount the macOS Data volume in Disk Utility first.\n'
-            printf '%s\n' '--environment reports the detected environment without changing the installation.'
-            printf '%s\n' '--detect only lists/selects a mounted macOS Data volume.'
-            printf '%s\n' '--check-user USER prints account/token/APFS reports in the installed macOS.'
+            printf "$(ui_text 'Usage: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n' 'Cách dùng: bash mdm1.sh [--environment | --detect | --check-user USER | --help]\n')"
+            printf "$(ui_text 'Unlock/mount the macOS Data volume in Disk Utility first.\n' 'Mở khóa/mount volume Data của macOS bằng Disk Utility trước.\n')"
+            printf '%s\n' "$(ui_text '--environment reports the detected environment without changing the installation.' '--environment hiển thị môi trường nhận diện được, không sửa bản macOS.')"
+            printf '%s\n' "$(ui_text '--detect only lists/selects a mounted macOS Data volume.' '--detect chỉ liệt kê/chọn volume Data macOS đã mount.')"
+            printf '%s\n' "$(ui_text '--check-user USER prints account/token/APFS reports in the installed macOS.' '--check-user USER in báo cáo tài khoản/token/APFS trong macOS đã cài.')"
             return 0;;
         '') ;;
-        *) fail "Unknown option: $1"; return 1;;
+        *) fail "$(ui_text "Unknown option: $1" "Tùy chọn không hợp lệ: $1")"; return 1;;
     esac
+    select_ui_language || return 0
     while true; do
         show_menu
-        read -r -p 'Chọn chức năng: ' choice || break
-        [ "$choice" != 0 ] || { printf 'Đã thoát.\n'; break; }
+        read -r -p "$(ui_text 'Select an option: ' 'Chọn chức năng: ')" choice || break
+        [ "$choice" != 0 ] || { printf "$(ui_text 'Exited.\n' 'Đã thoát.\n')"; break; }
         handle_choice "$choice"
     done
 }
