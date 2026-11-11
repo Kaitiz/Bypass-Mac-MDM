@@ -552,13 +552,43 @@ verify_offline_admin() {
     fi
 }
 
+# Use an image from the selected installation when available. Keep a small
+# bundled PNG fallback: Recovery may not expose the installed system pictures.
+set_offline_user_avatar() {
+    local name=$1 home=$2 uid=$3 candidate selected extension
+    local pictures=()
+    for candidate in "$DATA_VOLUME"/Library/User\ Pictures/*/*; do
+        [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+        case "$candidate" in
+            *.png|*.jpg|*.jpeg|*.tif|*.tiff|*.heic) pictures[${#pictures[@]}]=$candidate;;
+        esac
+    done
+    if [ "${#pictures[@]}" -gt 0 ]; then
+        selected=${pictures[$((RANDOM % ${#pictures[@]}))]}
+        extension=${selected##*.}
+        AVATAR_FILE="$home/.account-avatar.$extension"
+        cp "$selected" "$AVATAR_FILE" || return 1
+    else
+        AVATAR_FILE="$home/.account-avatar.png"
+        /usr/bin/base64 -D > "$AVATAR_FILE" <<'AVATAR_PNG'
+iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAACh0lEQVR4nO3Qx3EcQAxEUYSEtOQo77333nsTSEfCNHgXJU6tSInC7O4A6Dmg6gfQ/UQPoDIS+oLJEz2IyqiAukCHUBmJHkZlVEBdoCOojAqoC7SBykj0KCqjAuoCHUNlVEBdoOOojERPoDIqoC7QSVRGBdQFOoV52trc2I4+Y3eipzFJOzrNiD1m0SxAu3WmMhI9A3r/6jQj9rDt+ED/05nESPQsiNk6zYi6UPQcWC2j04x4I2lAy+twjUTPI79VdZoRYyoBaD0dlpHoBWQ2otOMcgeLXkRa4zrNKHFzHpCXTrKR6CUk5KvTjFKWZwBF6KQZiV5GaHE6zSh4v+gVxBWt04wiLwQC5ehEG4leRUSZOs0o5kgIUL5OnJHoNfjG0mlG3ndEr8Mxrk4zcn3kCUSniTASvQGX6Ch/Gzn98gGic8QZid7EYHQIy2j4negtjEQn6BuNHRwCop9PMBK9jfWi317NaN2bBdQFuoO1o99eVmfgo+hdjEQ/39cZOzgKNLnR+DvRexiPDrG/jsc1H6AJjbx+id6HV3SUPzp+p0QfwDE6zS8d10fOQHQj9zuiD+EeTSfgSwgQxSjoiOgjBJWqE/ZC9DHiStKJvBALlGAUvV/0CaIL1IkfnwEUZJSzXPQpcnLWyZot+gxpuekkbk4FcjFKHiz6HMkN6aSvJQCtbUSZKvoClFbWIe0UfQlWK+jwRjKBljTiLhR9BW4dHfY8PpBhRB/2G+g1ZmgfHfaknUTfYJL26LDHLJoIaGFEn7EX6C0qowLqAr1DZST6HpVRAXWBPqAyKqAu0EdURqKfUBkVUBfoMyqjAuoCfUFlJPoVlVEBdYG+oTIqoC7Qd1RGoj9QGf0Ehkyc+nGxMrsAAAAASUVORK5CYII=
+AVATAR_PNG
+        [ "$?" -eq 0 ] || return 1
+    fi
+    [ -s "$AVATAR_FILE" ] || return 1
+    chown "$uid:20" "$AVATAR_FILE" && chmod 644 "$AVATAR_FILE" || return 1
+    # Store the installed path, never the /Volumes/... Recovery mount path.
+    run_checked "$(ui_text 'Setting account avatar' 'Gán ảnh đại diện tài khoản')" offline_dscl -create "/Users/$name" Picture "/Users/$name/${AVATAR_FILE##*/}" || return 1
+    [ "$(plist_get "$DSLOCAL_PATH/users/$name.plist" :picture:0)" = "/Users/$name/${AVATAR_FILE##*/}" ] || return 1
+}
+
 # Account creation is isolated in a subshell so EXIT/INT/TERM traps are scoped.
 # Rollback removes only this operation's memberships, user and empty home folder.
 create_offline_admin() (
     # Bash 3.2 unwinds function-local variables before a subshell EXIT trap.
     # Subshell-scoped assignments keep rollback state alive without leaking it.
     name=$1 full_name=$2 uid= guid= home= record= lock= backup= attribute= value=
-    committed=0 record_started=0 home_created=0 group_started=0
+    committed=0 record_started=0 home_created=0 group_started=0 AVATAR_FILE=
     [ -n "$full_name" ] && [[ "$full_name" != *$'\n'* ]] && [[ "$full_name" != *$'\r'* ]] || {
         fail "$(ui_text 'Full name must be nonempty and occupy one line.' 'Full name không được trống hoặc có nhiều dòng.')"; exit 1;
     }
@@ -586,6 +616,7 @@ create_offline_admin() (
             fi
             if [ "$home_created" -eq 1 ]; then
                 if [ "$user_removed" -eq 1 ]; then
+                    [ -z "$AVATAR_FILE" ] || rm -f "$AVATAR_FILE" || failed=1
                     # Never recursively delete a home folder: it may now contain data.
                     rmdir "$home" || failed=1
                 else
@@ -640,6 +671,7 @@ create_offline_admin() (
     home_created=1
     run_checked "$(ui_text 'Setting home ownership' 'Đặt chủ sở hữu home')" chown "$uid:20" "$home" || exit 1
     run_checked "$(ui_text 'Setting home permissions' 'Đặt quyền home')" chmod 700 "$home" || exit 1
+    set_offline_user_avatar "$name" "$home" "$uid" || exit 1
     group_started=1
     run_checked "$(ui_text 'Adding admin membership' 'Thêm thành viên nhóm admin')" offline_dscl -merge /Groups/admin GroupMembership "$name" || exit 1
     run_checked "$(ui_text 'Adding admin UUID' 'Thêm UUID vào nhóm admin')" offline_dscl -merge /Groups/admin GroupMembers "$guid" || exit 1
@@ -647,7 +679,7 @@ create_offline_admin() (
     committed=1
     printf "$(ui_text 'Offline admin created: %s (%s).\n\n' 'Đã tạo admin ngoại tuyến: %s (%s).\n\n')" "$full_name" "$name"
     printf "$(ui_text 'Login, Secure Token and volume ownership have NOT been verified.\n\n' 'Chưa xác minh đăng nhập, Secure Token và volume ownership.\n\n')"
-    printf "$(ui_text 'The empty home folder is owned by the new user; GUI template initialization is not reproduced.\n\n' 'Home rỗng thuộc user mới; chưa tái tạo đầy đủ bước khởi tạo của giao diện Apple.\n\n')"
+    printf "$(ui_text 'The home folder is owned by the new user; GUI template initialization is not reproduced.\n\n' 'Home thuộc user mới; chưa tái tạo đầy đủ bước khởi tạo của giao diện Apple.\n\n')"
 )
 
 choose_setup_language() {
